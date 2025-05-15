@@ -13,7 +13,7 @@ int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, 
 {
     char buffer[256];
 	FILE *fp;
-	fp = fopen("parameters.txt", "r");
+    fp = fopen("../parameters.txt", "r");
 
    if (fp == NULL)
    {
