@@ -11,12 +11,10 @@
  * @see http://www.stack.nl/~dimitri/doxygen/commands.html
  */
 
-#include "io.c"
-#include "boundaries.c"
-
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /**
  * @brief Main function.
@@ -25,7 +23,39 @@
  * @return 0 on exit.
  */
 
+int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print, const char* filename);
+int output(int i_max, int j_max, double** u, double** v, double** p, double t, double a, double b, const char* prefix);
+double max_mat(int i_max, int j_max, double** u);
+double n_min(int num, ...);
 
+// Funções de boundaries.c
+enum {
+    TOP = 0,
+    BOTTOM = 1,
+    LEFT = 2,
+    RIGHT = 3
+};
+int set_noslip(int i_max, int j_max, double** u, double** v, int side);
+int set_inflow(int i_max, int j_max, double** u, double** v, int side, double u_fix, double v_fix);
+
+// Funções de integration.c
+double du2_dx(double** u, double** v, int i, int j, double delta_x, double gamma);
+double duv_dy(double** u, double** v, int i, int j, double delta_y, double gamma);
+double dv2_dy(double** u, double** v, int i, int j, double delta_y, double gamma);
+double duv_dx(double** u, double** v, int i, int j, double delta_x, double gamma);
+double d2u_dx2(double** u, int i, int j, double delta_x);
+double d2u_dy2(double** u, int i, int j, double delta_y);
+double d2v_dx2(double** v, int i, int j, double delta_x);
+double d2v_dy2(double** v, int i, int j, double delta_y);
+int FG(double** F, double** G, double** u, double** v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
+double dp_dx(double** p, int i, int j, double delta_x);
+double dp_dy(double** p, int i, int j, double delta_y);
+double L2(double** m, int i_max, int j_max);
+int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double** res, double** RHS, double omega, double eps, int max_it);
+
+// Funções de memory.c
+int allocate_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G, int i_max, int j_max);
+int free_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G);
 
 int main(int argc, char* argv[])
 {

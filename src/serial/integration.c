@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <math.h> 
 
-double du2_dx(double** u, double** v, int i, int j, double delta_x, double gamma) {
+static double du2_dx(double** u, double** v, int i, int j, double delta_x, double gamma) {
     double stencil1 = 0.5 * (u[i][j] + u[i+1][j]);
     double stencil2 = 0.5 * (u[i-1][j] + u[i][j]);
 
@@ -12,7 +12,7 @@ double du2_dx(double** u, double** v, int i, int j, double delta_x, double gamma
     return 1/delta_x * (stencil1*stencil1 - stencil2*stencil2) + gamma / delta_x * (stencil3 - stencil4);
 }
 
-double duv_dy(double** u, double** v, int i, int j, double delta_y, double gamma) {
+static double duv_dy(double** u, double** v, int i, int j, double delta_y, double gamma) {
     double stencil1 = 0.5 * (v[i][j] + v[i+1][j]);
     double stencil2 = 0.5 * (v[i][j-1] + v[i+1][j-1]);
 
@@ -25,7 +25,7 @@ double duv_dy(double** u, double** v, int i, int j, double delta_y, double gamma
     return 1/delta_y * (stencil3 - stencil4) + gamma / delta_y * (stencil5 - stencil6);
 }
 
-double dv2_dy(double** u, double** v, int i, int j, double delta_y, double gamma) {
+static double dv2_dy(double** u, double** v, int i, int j, double delta_y, double gamma) {
     double stencil1 = 0.5 * (v[i][j] + v[i][j+1]);
     double stencil2 = 0.5 * (v[i][j-1] + v[i][j]);
 
@@ -35,7 +35,7 @@ double dv2_dy(double** u, double** v, int i, int j, double delta_y, double gamma
     return 1/delta_y * (stencil1*stencil1 - stencil2*stencil2) + gamma / delta_y * (stencil3 - stencil4);
 }
 
-double duv_dx(double** u, double** v, int i, int j, double delta_x, double gamma) {
+static double duv_dx(double** u, double** v, int i, int j, double delta_x, double gamma) {
     double stencil1 = 0.5 * (u[i][j] + u[i][j+1]);
     double stencil2 = 0.5 * (u[i-1][j] + u[i-1][j+1]);
 
@@ -52,23 +52,23 @@ double duv_dx(double** u, double** v, int i, int j, double delta_x, double gamma
  * @brief Central differences for second derivatives.
  */
 
-double d2u_dx2(double** u, int i, int j, double delta_x) {
+static double d2u_dx2(double** u, int i, int j, double delta_x) {
     return (u[i+1][j] - 2 * u[i][j] + u[i-1][j]) / (delta_x*delta_x);
 }
 
-double d2u_dy2(double** u, int i, int j, double delta_y) {
+static double d2u_dy2(double** u, int i, int j, double delta_y) {
     return (u[i][j+1] - 2 * u[i][j] + u[i][j-1]) / (delta_y*delta_y);
 }
 
-double d2v_dx2(double** v, int i, int j, double delta_x) {
+static double d2v_dx2(double** v, int i, int j, double delta_x) {
     return (v[i+1][j] - 2 * v[i][j] + v[i-1][j]) / (delta_x*delta_x);
 }
 
-double d2v_dy2(double** v, int i, int j, double delta_y) {
+static double d2v_dy2(double** v, int i, int j, double delta_y) {
     return (v[i][j+1] - 2 * v[i][j] + v[i][j-1]) / (delta_y*delta_y);
 }
 
-int FG(double** F, double** G, double** u, double** v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
+static int FG(double** F, double** G, double** u, double** v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
     int i, j;
     for (i = 1; i <= i_max; i++) {
         for(j = 1; j <= j_max; j++) {
@@ -96,21 +96,21 @@ int FG(double** F, double** G, double** u, double** v, int i_max, int j_max, dou
 /**
  * @brief Forward difference stencil for dp/dx.
  */
-double dp_dx(double** p, int i, int j, double delta_x) {
+static double dp_dx(double** p, int i, int j, double delta_x) {
     return (p[i+1][j] - p[i][j]) / delta_x;
 }
 
 /**
  * @brief Forward difference stencil for dp/dy.
  */
-double dp_dy(double** p, int i, int j, double delta_y) {
+static double dp_dy(double** p, int i, int j, double delta_y) {
     return (p[i][j+1] - p[i][j]) / delta_y;
 }
 
 /**
  * Returns the L2 norm of a grid with one ghost row/column on each side.
  */
-double L2(double** m, int i_max, int j_max) {
+static double L2(double** m, int i_max, int j_max) {
     double norm = 0.0;
     int i, j;
     for (i = 1; i <= i_max; i++) {
@@ -124,7 +124,7 @@ double L2(double** m, int i_max, int j_max) {
 /**
  * @brief SOR.
  */
-int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double** res, double** RHS, double omega, double eps, int max_it) {
+static int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double** res, double** RHS, double omega, double eps, int max_it) {
     int i, j;
     double dydy = delta_y * delta_y;
     double dxdx = delta_x * delta_x;

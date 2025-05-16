@@ -1,8 +1,3 @@
-
-#include "memory.c"
-#include "integration.c"
-
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>

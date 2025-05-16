@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/serial.dir/link.d CMakeFiles/serial.dir/src/serial/main.c.o CMakeFiles/serial.dir/src/serial/io.c.o CMakeFiles/serial.dir/src/serial/boundaries.c.o CMakeFiles/serial.dir/src/serial/integration.c.o CMakeFiles/serial.dir/src/serial/memory.c.o -o serial  -lm /usr/lib/gcc/x86_64-redhat-linux/15/libgomp.so /usr/lib64/libpthread.a

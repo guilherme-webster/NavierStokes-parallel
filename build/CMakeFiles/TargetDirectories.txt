@@ -1,0 +1,3 @@
+/home/mauricio/Documentos/NavierStokes-parallel/build/CMakeFiles/serial.dir
+/home/mauricio/Documentos/NavierStokes-parallel/build/CMakeFiles/edit_cache.dir
+/home/mauricio/Documentos/NavierStokes-parallel/build/CMakeFiles/rebuild_cache.dir
