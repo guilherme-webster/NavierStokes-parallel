@@ -58,8 +58,11 @@ int main(int argc, char* argv[])
 
     const char* param_file = "parameters.txt"; // file containing parameters
 
+    fprintf(stderr, "CUDA: Starting with %d arguments\n", argc);
     if (argc > 1) {
-        param_file = argv[1];
+        fprintf(stderr, "CUDA: Input file is %s\n", argv[1]);
+    } else {
+        fprintf(stderr, "CUDA: No input file specified, using default\n");
     }
     
     // Initialize all parameters.
@@ -136,10 +139,24 @@ int main(int argc, char* argv[])
         printf("Velocities updatet!\n");
 
         // Print to file every ..th step.
+        // if (n % n_print == 0) {
+        //     char out_prefix[12];
+        //     sprintf(out_prefix, "out/%d", n_out);
+        //     output(i_max, j_max, u, v, p, t, a, b, out_prefix);
+        //     n_out++;
+        // }
+
         if (n % n_print == 0) {
-            char out_prefix[12];
-            sprintf(out_prefix, "out/%d", n_out);
-            output(i_max, j_max, u, v, p, t, a, b, out_prefix);
+            // Instead of outputting to files, print the data to stdout
+            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+
+            // Print some key values from u, v, p matrices
+            // For example, print central values and some boundary values
+            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
+
+            // Add more key values as needed
             n_out++;
         }
 
@@ -151,7 +168,7 @@ int main(int argc, char* argv[])
 
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    fprintf(stderr, ".%6f", time_spent);
+    fprintf(stderr, "%.6f", time_spent);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
