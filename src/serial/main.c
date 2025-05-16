@@ -16,6 +16,7 @@
 #include "integration.h"
 #include "boundaries.h"
 
+#include <time.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -81,6 +82,8 @@ int main(int argc, char* argv[])
     int n = 0;
     int n_out = 0;
 
+    clock_t start = clock();
+
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
@@ -145,6 +148,11 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
+
+    clock_t end = clock();
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+
+    fprintf(stderr, "%.6f", time_spent);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);

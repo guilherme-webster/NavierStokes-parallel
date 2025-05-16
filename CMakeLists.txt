@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Define o nome do projeto
-project(NavierStokes LANGUAGES C) #CUDA CXX) 
+project(NavierStokes LANGUAGES C CUDA) #CUDA CXX) 
 
 # Importa os pacotes
-find_package(CUDA REQUIRED)
 find_package(OpenMP REQUIRED)
 
 # Adiciona os diretórios de inclusão
@@ -29,7 +28,7 @@ set(CUDA_SOURCES
 
 # Define o executável
 add_executable(serial   ${SOURCES})
-add_executable(parallel ${CuDA_SOURCES})
+add_executable(parallel ${CUDA_SOURCES})
 
 
 if(NOT DEFINED ARCH)
