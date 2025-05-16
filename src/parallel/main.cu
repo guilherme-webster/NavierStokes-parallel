@@ -58,11 +58,8 @@ int main(int argc, char* argv[])
 
     const char* param_file = "parameters.txt"; // file containing parameters
 
-    fprintf(stderr, "CUDA: Starting with %d arguments\n", argc);
     if (argc > 1) {
-        fprintf(stderr, "CUDA: Input file is %s\n", argv[1]);
-    } else {
-        fprintf(stderr, "CUDA: No input file specified, using default\n");
+        param_file = argv[1];
     }
     
     // Initialize all parameters.
