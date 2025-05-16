@@ -58,9 +58,23 @@ int main(int argc, char* argv[])
 
     const char* param_file = "parameters.txt"; // file containing parameters
 
+    fprintf(stderr, "CUDA: Working directory test\n");
+    
+    // Test if we can open the file directly
     if (argc > 1) {
-        param_file = argv[1];
+        FILE *fp = fopen(argv[1], "r");
+        if (fp == NULL) {
+            fprintf(stderr, "CUDA: Could not open param_file\n");
+        } else {
+            fprintf(stderr, "CUDA: Successfully opened '%s'\n", argv[1]);
+            param_file = argv[1];
+            fclose(fp);
+        }
     }
+    
+    // if (argc > 1) {
+    //     param_file = argv[1];
+    // }
     
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
