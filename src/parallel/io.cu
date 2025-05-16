@@ -1,6 +1,6 @@
-#include "io.h"
-#include "memory.h"
-#include "integration.h"
+
+#include "memory.c"
+#include "integration.c"
 
 
 #include <stdlib.h>

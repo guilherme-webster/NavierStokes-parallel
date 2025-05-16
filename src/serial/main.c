@@ -11,10 +11,8 @@
  * @see http://www.stack.nl/~dimitri/doxygen/commands.html
  */
 
-#include "memory.h"
-#include "io.h"
-#include "integration.h"
-#include "boundaries.h"
+#include "io.c"
+#include "boundaries.c"
 
 #include <time.h>
 #include <math.h>
@@ -26,6 +24,8 @@
  * This is the main function.
  * @return 0 on exit.
  */
+
+
 
 int main(int argc, char* argv[])
 {

@@ -11,10 +11,8 @@
  * @see http://www.stack.nl/~dimitri/doxygen/commands.html
  */
 
-#include "memory.h"
-#include "io.h"
-#include "integration.h"
-#include "boundaries.h"
+#include "io.c"
+#include "boundaries.c"
 
 #include <time.h>
 #include <math.h>
@@ -26,6 +24,8 @@
  * This is the main function.
  * @return 0 on exit.
  */
+
+
 
 int main(int argc, char* argv[])
 {
@@ -56,25 +56,13 @@ int main(int argc, char* argv[])
     int problem;                        // problem type
     double f;                           // frequency of periodic boundary conditions (if problem == 2)
 
-    const char* param_file = "parameters.txt"; // file containing parameters
+    // default parameter file
+    const char* param_file = "parameters.txt";
 
-    fprintf(stderr, "CUDA: Working directory test\n");
-    
-    // Test if we can open the file directly
+    // If a parameter file is provided as command line argument, use it
     if (argc > 1) {
-        FILE *fp = fopen(argv[1], "r");
-        if (fp == NULL) {
-            fprintf(stderr, "CUDA: Could not open param_file\n");
-        } else {
-            fprintf(stderr, "CUDA: Successfully opened '%s'\n", argv[1]);
-            param_file = argv[1];
-            fclose(fp);
-        }
+        param_file = argv[1];
     }
-    
-    // if (argc > 1) {
-    //     param_file = argv[1];
-    // }
     
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
@@ -161,7 +149,7 @@ int main(int argc, char* argv[])
             // Instead of outputting to files, print the data to stdout
             printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
 
-            // Print some key values from u, v, p matrices
+            // Printing some key values from u, v, p matrices
             // For example, print central values and some boundary values
             printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
@@ -176,7 +164,6 @@ int main(int argc, char* argv[])
     }
 
     clock_t end = clock();
-
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
     fprintf(stderr, "%.6f", time_spent);

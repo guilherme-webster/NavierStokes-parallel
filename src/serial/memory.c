@@ -1,6 +1,6 @@
- #include "memory.h"
+#include "stdlib.h"
 
- int allocate_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G, int i_max, int j_max) {
+int allocate_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G, int i_max, int j_max) {
     int i, j;
     *p = (double**) calloc(i_max + 2, sizeof(double*));
     *u = (double**) calloc(i_max + 1, sizeof(double*)); /* u values on the right edges of the ghost cells are not needed */

@@ -1,8 +1,9 @@
-#include "boundaries.h"
-
-int set_noslip(int i_max, int j_max, double** u, double** v, int side) {
-    return set_inflow(i_max, j_max, u, v, side, 0, 0);
-}
+enum {
+    TOP = 0,
+    BOTTOM = 1,
+    LEFT = 2,
+    RIGHT = 3
+};
 
 int set_inflow(int i_max, int j_max, double** u, double** v, int side, double u_fix, double v_fix) {
     int i,j;
@@ -36,4 +37,8 @@ int set_inflow(int i_max, int j_max, double** u, double** v, int side, double u_
     }
 
     return 0;
+}
+
+int set_noslip(int i_max, int j_max, double** u, double** v, int side) {
+    return set_inflow(i_max, j_max, u, v, side, 0, 0);
 }
