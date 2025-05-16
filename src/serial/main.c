@@ -16,6 +16,7 @@
 #include "integration.h"
 #include "boundaries.h"
 
+#include <time.h>
 #include <math.h>
 #include <stdio.h>
 
@@ -26,7 +27,7 @@
  * @return 0 on exit.
  */
 
-int main()
+int main(int argc, char* argv[])
 {
     // Grid pointers.
 	double** u;     // velocity x-component
@@ -55,8 +56,16 @@ int main()
     int problem;                        // problem type
     double f;                           // frequency of periodic boundary conditions (if problem == 2)
 
+    // default parameter file
+    const char* param_file = "parameters.txt";
+
+    // If a parameter file is provided as command line argument, use it
+    if (argc > 1) {
+        param_file = argv[1];
+    }
+    
     // Initialize all parameters.
-	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print);
+	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     printf("Initialized!\n");
 
     // Set step size in space.
@@ -72,6 +81,8 @@ int main()
     int i, j;
     int n = 0;
     int n_out = 0;
+
+    clock_t start = clock();
 
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
@@ -137,6 +148,11 @@ int main()
         t += delta_t;
         n++;
     }
+
+    clock_t end = clock();
+    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+
+    fprintf(stderr, "%.6f", time_spent);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);

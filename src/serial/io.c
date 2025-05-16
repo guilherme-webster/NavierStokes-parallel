@@ -9,11 +9,11 @@
 #include <string.h>
 #include <stdarg.h>
 
-int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print)
+int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print, const char* filename)
 {
     char buffer[256];
 	FILE *fp;
-    fp = fopen("parameters.txt", "r");
+    fp = fopen(filename, "r");
 
    if (fp == NULL)
    {
