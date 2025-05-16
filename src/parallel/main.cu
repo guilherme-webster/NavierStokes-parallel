@@ -151,7 +151,7 @@ int main(int argc, char* argv[])
 
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    fprintf(stderr, "%6f", time_spent);
+    fprintf(stderr, ".%6f", time_spent);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
