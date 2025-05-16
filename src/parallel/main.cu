@@ -26,7 +26,7 @@
  * @return 0 on exit.
  */
 
-int main()
+int main(int argc, char* argv[])
 {
     // Grid pointers.
 	double** u;     // velocity x-component
@@ -55,8 +55,14 @@ int main()
     int problem;                        // problem type
     double f;                           // frequency of periodic boundary conditions (if problem == 2)
 
+    const char* param_file = "parameters.txt"; // file containing parameters
+
+    if (argc > 1) {
+        param_file = argv[1];
+    }
+    
     // Initialize all parameters.
-	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print);
+	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     printf("Initialized!\n");
 
     // Set step size in space.
