@@ -1,8 +1,3 @@
-/**
- * @file memory.h
- * @author Hollweck, Wigg
- * @date 10 April 2019
- * @brief Memory management.
  */
 
 #ifndef _MEMORY_H

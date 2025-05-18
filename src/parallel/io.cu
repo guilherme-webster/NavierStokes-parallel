@@ -1,161 +1,67 @@
+// This file handles input and output operations, including reading parameters and writing results to files.
+
 #include "io.h"
-#include "memory.h"
-#include "integration.h"
-
-
-#include <stdlib.h>
 #include <stdio.h>
-#include <math.h>
-#include <string.h>
-#include <stdarg.h>
+#include <stdlib.h>
 
-int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print, const char* filename)
-{
-    char buffer[256];
-	FILE *fp;
-    fp = fopen(filename, "r");
-
-   if (fp == NULL)
-   {
-      perror("Error while opening the file.\n");
-      exit(EXIT_FAILURE);
-   }
-
-    // Read file line-by-line to buffer and extract the values.
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%d", problem);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", f);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%d", i_max);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%d", j_max);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", a);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", b);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", T);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", Re);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", g_x);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", g_y);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", tau);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", omega);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%lf", epsilon);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%d", max_it);
-    fgets(buffer, 256, fp);
-    sscanf(buffer, "%d", n_print);
-
-    fclose(fp);
-
-    return 0;
-}
-
-int output(int i_max, int j_max, double** u, double** v, double** p, double t, double a, double b, const char* prefix)
-{
-	int i, j;
-
-    char fname_u[64];
-    char fname_v[64];
-    char fname_p[64];
-    char fname_t[64];
-
-    strcpy(fname_u, prefix);
-    strcpy(fname_v, prefix);
-    strcpy(fname_p, prefix);
-
-    strcat(fname_u, "_u.txt");
-    strcat(fname_v, "_v.txt");
-    strcat(fname_p, "_p.txt");
-
-    FILE* fp_u,* fp_v, * fp_p;
-    fp_u = fopen(fname_u, "w");
-    fp_v = fopen(fname_v, "w");
-    fp_p = fopen(fname_p, "w");
-
-    if (fp_u == NULL || fp_v == NULL || fp_p == NULL)
-    {
-      perror("Error opening one ore more output files. Make sure the directory 'out' exists.\n");
-      exit(EXIT_FAILURE);
+void read_parameters(const char* filename, int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print) {
+    FILE* file = fopen(filename, "r");
+    if (file == NULL) {
+        fprintf(stderr, "Error opening parameter file: %s\n", filename);
+        exit(EXIT_FAILURE);
     }
 
-    // Header
-    fprintf(fp_p, "%.5f\n", t);
-    fprintf(fp_p, "%.5f\n", a);
-    fprintf(fp_p, "%.5f\n", b);
+    fscanf(file, "%d", problem);
+    fscanf(file, "%lf", f);
+    fscanf(file, "%d", i_max);
+    fscanf(file, "%d", j_max);
+    fscanf(file, "%lf", a);
+    fscanf(file, "%lf", b);
+    fscanf(file, "%lf", Re);
+    fscanf(file, "%lf", T);
+    fscanf(file, "%lf", g_x);
+    fscanf(file, "%lf", g_y);
+    fscanf(file, "%lf", tau);
+    fscanf(file, "%lf", omega);
+    fscanf(file, "%lf", epsilon);
+    fscanf(file, "%d", max_it);
+    fscanf(file, "%d", n_print);
 
-    fprintf(fp_u, "%.5f\n", t);
-    fprintf(fp_u, "%.5f\n", a);
-    fprintf(fp_u, "%.5f\n", b);
+    fclose(file);
+}
 
-    fprintf(fp_v, "%.5f\n", t);
-    fprintf(fp_v, "%.5f\n", a);
-    fprintf(fp_v, "%.5f\n", b);
+void output_results(int i_max, int j_max, double** u, double** v, double** p, double t, double a, double b, const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (file == NULL) {
+        fprintf(stderr, "Error opening output file: %s\n", filename);
+        exit(EXIT_FAILURE);
+    }
 
-    // Rows first, then columns
-    for (j = 0; j < j_max + 2; j++) {
-        for (i = 0; i < i_max + 2; i++) {
-            if (i < i_max + 1) fprintf(fp_u, "%.5f ", u[i][j]); // 5 decimal places
-            if (j < j_max + 1) fprintf(fp_v, "%.5f ", v[i][j]);
-            fprintf(fp_p, "%.5f ", p[i][j]);
+    fprintf(file, "Time: %.6f\n", t);
+    fprintf(file, "Grid Size: %d x %d\n", i_max, j_max);
+    fprintf(file, "Velocity (u):\n");
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            fprintf(file, "%.6f ", u[i][j]);
         }
-        fprintf(fp_u, "\n"); 
-        fprintf(fp_v, "\n");
-        fprintf(fp_p, "\n");
+        fprintf(file, "\n");
     }
 
-    fclose(fp_u);
-    fclose(fp_v);
-    fclose(fp_p);
-
-    printf("Output created!\n");	
-    return 0;
-}
-
-double max_mat(int i_max, int j_max, double** u)
-{
-   	double max = u[0][0];
-   	int i,j;
-
-   	for (i = 1; i <= i_max; i++)
-   	{
-       	for (j = 1; j <= j_max; j++)
-       	{
-           	if (max < u[i][j])
-           	{
-               	max = u[i][j];
-           	}
-    	} 
-    }
-
-	return max;
-}
-
-double n_min(int num, ...)
-{
-    va_list valist;
-    va_start(valist, num);
-
-   	double min = va_arg(valist, double);
-   	int i;
-
-   	for (i = 0; i < num-1; i++)
-   	{
-        double val = va_arg(valist, double);
-
-        if (min > val)
-        {
-            min = val;
+    fprintf(file, "Velocity (v):\n");
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            fprintf(file, "%.6f ", v[i][j]);
         }
-    	 
+        fprintf(file, "\n");
     }
-    
-	return min;
+
+    fprintf(file, "Pressure (p):\n");
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            fprintf(file, "%.6f ", p[i][j]);
+        }
+        fprintf(file, "\n");
+    }
+
+    fclose(file);
 }

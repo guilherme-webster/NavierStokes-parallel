@@ -1,3 +1,6 @@
+#ifndef MEMORY_H
+#define MEMORY_H
+
 #include "memory.h"
 
 int allocate_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G, int i_max, int j_max) {
