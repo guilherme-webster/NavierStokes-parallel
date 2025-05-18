@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, 
-         double* Re, double* T, double* g_x, double* g_y, double* tau, 
+         double* T, double* R, double* g_x, double* g_y, double* tau, 
          double* omega, double* epsilon, int* max_it, int* n_print, 
          const char* param_file) {
     
@@ -37,10 +37,10 @@ int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b,
     sscanf(buffer, "%lf", b);
     
     if (fgets(buffer, 256, fp) == NULL) return -1;
-    sscanf(buffer, "%lf", Re);
+    sscanf(buffer, "%lf", T);
     
     if (fgets(buffer, 256, fp) == NULL) return -1;
-    sscanf(buffer, "%lf", T);
+    sscanf(buffer, "%lf", Re);
     
     if (fgets(buffer, 256, fp) == NULL) return -1;
     sscanf(buffer, "%lf", g_x);

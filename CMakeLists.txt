@@ -3,8 +3,14 @@ cmake_minimum_required(VERSION 3.10)
 # Define o nome do projeto
 project(NavierStokes LANGUAGES C CUDA)
 
+set(CMAKE_CUDA_FLAGS "-arch=sm_75 -gencode arch=compute_75,code=compute_75 -allow-unsupported-compiler --forward-unknown-to-host-compiler")
+
 # Importa os pacotes
 find_package(OpenMP REQUIRED)
+
+# -arch=sm_75 -gencode arch=compute_75,code=compute_75
+
+# set(CMAKE_CUDA_FLAGS "-allow-unsupported-compiler --forward-unknown-to-host-compiler")
 
 # Adiciona os diretórios de inclusão
 include_directories(.)
@@ -41,7 +47,3 @@ endif()
 # Vincula as bibliotecas necessárias
 target_link_libraries(serial m OpenMP::OpenMP_C)
 target_link_libraries(parallel m OpenMP::OpenMP_C)
-
-set_property(
-    TARGET   parallel
-    PROPERTY CUDA_ARCHITECTURES OFF)
