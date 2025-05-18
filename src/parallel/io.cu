@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, 
-         double* T, double* R, double* g_x, double* g_y, double* tau, 
+         double* T, double* Re, double* g_x, double* g_y, double* tau, 
          double* omega, double* epsilon, int* max_it, int* n_print, 
          const char* param_file) {
     

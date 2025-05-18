@@ -48,7 +48,7 @@ int main(int argc, char* argv[])
         }
     }
     
-    init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
+    init(&problem, &f, &i_max, &j_max, &a, &b, &T, &Re, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     printf("Initialized!\n");
 
     delta_x = a / i_max;
