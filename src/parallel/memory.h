@@ -40,6 +40,7 @@ int allocate_memory(double*** u, double*** v, double*** p, double*** res, double
  * @return 0 on finish.
  */
 
-int free_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G);
+int free_memory(double*** u, double*** v, double*** p, double*** res, 
+               double*** RHS, double*** F, double*** G, int i_max);
 
 #endif

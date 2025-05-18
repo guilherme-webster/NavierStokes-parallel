@@ -182,6 +182,6 @@ int main(int argc, char* argv[])
     fprintf(stderr, "%.6f", time_spent);
 
     // Free grid memory.
-    free_memory(&u, &v, &p, &res, &RHS, &F, &G);
+    free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
     return 0;
 }
