@@ -30,12 +30,10 @@ set(CUDA_SOURCES
 add_executable(serial   ${SOURCES})
 add_executable(parallel ${CUDA_SOURCES})
 
-
-if(NOT DEFINED ARCH)
-    set(ARCH "sm_60")
+# Use a arquitetura apenas se for especificada pelo usuário
+if(DEFINED ARCH)
+    target_compile_options(parallel PRIVATE "-arch=${ARCH}")
 endif()
-target_compile_options(parallel
-    PRIVATE "-arch=${ARCH}")
 
 # Vincula as bibliotecas necessárias
 target_link_libraries(serial m OpenMP::OpenMP_C)
