@@ -25,12 +25,28 @@ int allocate_memory(double*** u, double*** v, double*** p, double*** res, double
    return 0;
 }
 
-int free_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G) {
-   free(*u);
-   free(*v);
-   free(*p);
-   free(*res);
-   free(*RHS);
-   free(*F);
-   free(*G);
+int free_memory(double*** u, double*** v, double*** p, double*** res, double*** RHS, double*** F, double*** G, int i_max) {
+    int i;
+    
+    // Free each row first for u (different size)
+    for (i = 0; i < i_max + 1; i++) {
+        if ((*u)[i] != NULL)
+            free((*u)[i]);
+    }
+    
+    // Free each row for other arrays
+    for (i = 0; i < i_max + 2; i++) {
+        if ((*p)[i] != NULL) free((*p)[i]);
+        if ((*v)[i] != NULL) free((*v)[i]);
+        if ((*res)[i] != NULL) free((*res)[i]);
+        if ((*RHS)[i] != NULL) free((*RHS)[i]);
+        if ((*F)[i] != NULL) free((*F)[i]);
+        if ((*G)[i] != NULL) free((*G)[i]);
+    }
+    
+    // Now free the pointer arrays
+    free(*u); free(*v); free(*p);
+    free(*res); free(*RHS); free(*F); free(*G);
+    
+    return 0;
 }
