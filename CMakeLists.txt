@@ -33,9 +33,9 @@ set(CUDA_SOURCES
 add_executable(serial   ${SOURCES})
 add_executable(parallel ${CUDA_SOURCES})
 
-# Use a arquitetura apenas se for especificada pelo usuário
-if(DEFINED ARCH)
-    target_compile_options(parallel PRIVATE "-arch=${ARCH}")
+# Use -DARCH=sm_XX to override architecture, default is sm_75
+if(NOT DEFINED ARCH)
+    set(ARCH "sm_75")
 endif()
 
 # Vincula as bibliotecas necessárias

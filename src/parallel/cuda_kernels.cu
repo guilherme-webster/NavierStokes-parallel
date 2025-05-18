@@ -1,5 +1,19 @@
 #include "cuda_kernels.h"
 #include <cuda_runtime.h>
+#include <stdio.h>
+#include <math.h>
+
+// Add CUDA error checking
+void check_cuda(cudaError_t error, const char *filename, const int line)
+{
+  if (error != cudaSuccess) {
+    fprintf(stderr, "CUDA Error: %s:%d: %s: %s\n", filename, line,
+                 cudaGetErrorName(error), cudaGetErrorString(error));
+    exit(EXIT_FAILURE);
+  }
+}
+
+#define CUDACHECK(cmd) check_cuda(cmd, __FILE__, __LINE__)
 
 __global__ void SORKernel(double* p, double* res, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1; // +1 to skip ghost cells
@@ -34,9 +48,9 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     double *d_p, *d_res, *d_RHS;
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
     
-    cudaMalloc((void**)&d_p, size);
-    cudaMalloc((void**)&d_res, size);
-    cudaMalloc((void**)&d_RHS, size);
+    CUDACHECK(cudaMalloc((void**)&d_p, size));
+    CUDACHECK(cudaMalloc((void**)&d_res, size));
+    CUDACHECK(cudaMalloc((void**)&d_RHS, size));
     
     // Create flattened host arrays
     double *h_p = (double*)malloc(size);
@@ -52,8 +66,9 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     }
     
     // Copy data to device
-    cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_RHS, h_RHS, size, cudaMemcpyHostToDevice);
+    CUDACHECK(cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_RHS, h_RHS, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_res, h_res, size, cudaMemcpyHostToDevice));
     
     // Calculate initial norm
     for (int i = 1; i <= i_max; i++) {
@@ -79,19 +94,22 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
             h_p[0 * (j_max + 2) + j] = h_p[1 * (j_max + 2) + j];
             h_p[(i_max + 1) * (j_max + 2) + j] = h_p[i_max * (j_max + 2) + j];
         }
-        cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice);
+        CUDACHECK(cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice));
         
         // Red points
         SORKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, omega, dxdx, dydy);
-        cudaDeviceSynchronize();
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
         
         // Calculate residual and check convergence
         CalculateResidualKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
         cudaDeviceSynchronize();
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
         
         // Copy results back
-        cudaMemcpy(h_p, d_p, size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(h_res, d_res, size, cudaMemcpyDeviceToHost);
+        CUDACHECK(cudaMemcpy(h_p, d_p, size, cudaMemcpyDeviceToHost));
+        CUDACHECK(cudaMemcpy(h_res, d_res, size, cudaMemcpyDeviceToHost));
         
         // Check for convergence
         double res_norm = 0.0;
@@ -118,9 +136,9 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     }
     
     // Free memory
-    cudaFree(d_p);
-    cudaFree(d_res);
-    cudaFree(d_RHS);
+    CUDACHECK(cudaFree(d_p));
+    CUDACHECK(cudaFree(d_res));
+    CUDACHECK(cudaFree(d_RHS));
     free(h_p);
     free(h_res);
     free(h_RHS);
