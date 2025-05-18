@@ -3,6 +3,7 @@
 #include "integration.h"
 #include "boundaries.h"
 #include "cuda_kernels.h"
+#include "utils.h"
 
 #include <time.h>
 #include <math.h>

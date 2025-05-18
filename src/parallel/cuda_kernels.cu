@@ -23,24 +23,107 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
     }
 }
 
-void launchSORKernel(double* d_p, double* d_res, double* d_RHS, int i_max, int j_max, double omega, double delta_x, double delta_y) {
-    dim3 blockSize(16, 16);
-    dim3 gridSize((i_max + 1 + blockSize.x - 1) / blockSize.x, (j_max + 1 + blockSize.y - 1) / blockSize.y);
-
-    double dxdx = delta_x * delta_x;
+int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y, 
+            double** res, double** RHS, double omega, double eps, int max_it) {
+    int it = 0;
     double dydy = delta_y * delta_y;
-
-    SORKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, omega, dxdx, dydy);
-    cudaDeviceSynchronize();
-}
-
-void launchCalculateResidualKernel(double* d_p, double* d_res, double* d_RHS, int i_max, int j_max, double delta_x, double delta_y) {
-    dim3 blockSize(16, 16);
-    dim3 gridSize((i_max + 1 + blockSize.x - 1) / blockSize.x, (j_max + 1 + blockSize.y - 1) / blockSize.y);
-
     double dxdx = delta_x * delta_x;
-    double dydy = delta_y * delta_y;
-
-    CalculateResidualKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
-    cudaDeviceSynchronize();
+    double norm_p = 0.0;
+    
+    // Allocate device memory for flattened arrays
+    double *d_p, *d_res, *d_RHS;
+    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    cudaMalloc((void**)&d_p, size);
+    cudaMalloc((void**)&d_res, size);
+    cudaMalloc((void**)&d_RHS, size);
+    
+    // Create flattened host arrays
+    double *h_p = (double*)malloc(size);
+    double *h_res = (double*)malloc(size);
+    double *h_RHS = (double*)malloc(size);
+    
+    // Copy from 2D arrays to flattened arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            h_p[i * (j_max + 2) + j] = p[i][j];
+            h_RHS[i * (j_max + 2) + j] = RHS[i][j];
+        }
+    }
+    
+    // Copy data to device
+    cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_RHS, h_RHS, size, cudaMemcpyHostToDevice);
+    
+    // Calculate initial norm
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            norm_p += p[i][j] * p[i][j];
+        }
+    }
+    norm_p = sqrt(norm_p / (i_max * j_max));
+    
+    // Grid and block dimensions
+    dim3 blockSize(16, 16);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                 (j_max + blockSize.y - 1) / blockSize.y);
+    
+    // Run Red-Black SOR iterations
+    while (it < max_it) {
+        // Update boundary conditions on device
+        for (int i = 1; i <= i_max; i++) {
+            h_p[i * (j_max + 2) + 0] = h_p[i * (j_max + 2) + 1];
+            h_p[i * (j_max + 2) + (j_max + 1)] = h_p[i * (j_max + 2) + j_max];
+        }
+        for (int j = 1; j <= j_max; j++) {
+            h_p[0 * (j_max + 2) + j] = h_p[1 * (j_max + 2) + j];
+            h_p[(i_max + 1) * (j_max + 2) + j] = h_p[i_max * (j_max + 2) + j];
+        }
+        cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice);
+        
+        // Red points
+        SORKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, omega, dxdx, dydy);
+        cudaDeviceSynchronize();
+        
+        // Calculate residual and check convergence
+        CalculateResidualKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
+        cudaDeviceSynchronize();
+        
+        // Copy results back
+        cudaMemcpy(h_p, d_p, size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_res, d_res, size, cudaMemcpyDeviceToHost);
+        
+        // Check for convergence
+        double res_norm = 0.0;
+        for (int i = 1; i <= i_max; i++) {
+            for (int j = 1; j <= j_max; j++) {
+                res_norm += h_res[i * (j_max + 2) + j] * h_res[i * (j_max + 2) + j];
+            }
+        }
+        res_norm = sqrt(res_norm / (i_max * j_max));
+        
+        if (res_norm <= eps * (norm_p + 1e-10)) {
+            break; // Converged
+        }
+        
+        it++;
+    }
+    
+    // Copy final result back to 2D arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            p[i][j] = h_p[i * (j_max + 2) + j];
+            res[i][j] = h_res[i * (j_max + 2) + j];
+        }
+    }
+    
+    // Free memory
+    cudaFree(d_p);
+    cudaFree(d_res);
+    cudaFree(d_RHS);
+    free(h_p);
+    free(h_res);
+    free(h_RHS);
+    
+    return (it < max_it) ? 0 : -1;
 }

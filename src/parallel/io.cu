@@ -4,30 +4,67 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void read_parameters(const char* filename, int* problem, double* f, int* i_max, int* j_max, double* a, double* b, double* Re, double* T, double* g_x, double* g_y, double* tau, double* omega, double* epsilon, int* max_it, int* n_print) {
-    FILE* file = fopen(filename, "r");
-    if (file == NULL) {
-        fprintf(stderr, "Error opening parameter file: %s\n", filename);
-        exit(EXIT_FAILURE);
+int init(int* problem, double* f, int* i_max, int* j_max, double* a, double* b, 
+         double* Re, double* T, double* g_x, double* g_y, double* tau, 
+         double* omega, double* epsilon, int* max_it, int* n_print, 
+         const char* param_file) {
+    
+    FILE* fp = fopen(param_file, "r");
+    if (fp == NULL) {
+        printf("Error opening parameter file %s\n", param_file);
+        return -1;
     }
-
-    fscanf(file, "%d", problem);
-    fscanf(file, "%lf", f);
-    fscanf(file, "%d", i_max);
-    fscanf(file, "%d", j_max);
-    fscanf(file, "%lf", a);
-    fscanf(file, "%lf", b);
-    fscanf(file, "%lf", Re);
-    fscanf(file, "%lf", T);
-    fscanf(file, "%lf", g_x);
-    fscanf(file, "%lf", g_y);
-    fscanf(file, "%lf", tau);
-    fscanf(file, "%lf", omega);
-    fscanf(file, "%lf", epsilon);
-    fscanf(file, "%d", max_it);
-    fscanf(file, "%d", n_print);
-
-    fclose(file);
+    
+    char buffer[256];
+    
+    // Read values, skipping comment lines
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%d", problem);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", f);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%d", i_max);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%d", j_max);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", a);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", b);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", Re);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", T);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", g_x);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", g_y);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", tau);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", omega);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%lf", epsilon);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%d", max_it);
+    
+    if (fgets(buffer, 256, fp) == NULL) return -1;
+    sscanf(buffer, "%d", n_print);
+    
+    fclose(fp);
+    return 0;
 }
 
 void output_results(int i_max, int j_max, double** u, double** v, double** p, double t, double a, double b, const char* filename) {

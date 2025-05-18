@@ -1,4 +1,5 @@
 #include "boundaries.h"
+#include "utils.h"
 
 int set_noslip(int i_max, int j_max, double** u, double** v, int side) {
     return set_inflow(i_max, j_max, u, v, side, 0, 0);
