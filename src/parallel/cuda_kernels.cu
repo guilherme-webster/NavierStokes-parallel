@@ -15,11 +15,25 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 
 #define CUDACHECK(cmd) check_cuda(cmd, __FILE__, __LINE__)
 
-__global__ void SORKernel(double* p, double* res, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
+__global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1; // +1 to skip ghost cells
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1; // +1 to skip ghost cells
 
-    if (i <= i_max && j <= j_max) {
+    // Only update red cells (i+j is even)
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
+        p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
+            omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
+            ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
+            (p[i * (j_max + 2) + (j + 1)] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j]);
+    }
+}
+
+__global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1; // +1 to skip ghost cells
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1; // +1 to skip ghost cells
+
+    // Only update black cells (i+j is odd)
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
         p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
             ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
@@ -68,7 +82,9 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     // Copy data to device
     CUDACHECK(cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice));
     CUDACHECK(cudaMemcpy(d_RHS, h_RHS, size, cudaMemcpyHostToDevice));
-    CUDACHECK(cudaMemcpy(d_res, h_res, size, cudaMemcpyHostToDevice));
+    //CUDACHECK(cudaMemcpy(d_res, h_res, size, cudaMemcpyHostToDevice));
+    // Initialize residual to zero
+    CUDACHECK(cudaMemset(d_res, 0, size));
     
     // Calculate initial norm
     for (int i = 1; i <= i_max; i++) {
@@ -97,7 +113,12 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
         CUDACHECK(cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice));
         
         // Red points
-        SORKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, omega, dxdx, dydy);
+        RedSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
+        
+        // Black points update
+        BlackSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         
@@ -145,3 +166,5 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     
     return (it < max_it) ? 0 : -1;
 }
+
+// implement two kernels: red and black, check L2 for early convergence 
