@@ -1,6 +1,6 @@
 #include "cuda_kernels.h"
 #include <cuda_runtime.h>
-#include <integration.h>
+#include "integration.h"
 #include <stdio.h>
 #include <math.h>
 
