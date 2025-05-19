@@ -134,7 +134,7 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
         }
         res_norm = sqrt(res_norm / (i_max * j_max));
         
-        if (res_norm <= eps * (norm_p + 1e-10)) {
+        if (res_norm <= eps * (norm_p + 0.01)) {
             break; // Converged
         }
         
