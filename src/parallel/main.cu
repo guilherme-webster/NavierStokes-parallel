@@ -89,27 +89,29 @@ int main(int argc, char* argv[])
 
         printf("Conditions set!\n");
 
-        FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
-
+        //FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
+        cudaFG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
         printf("F, G calculated!\n");
 
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
-            }
-        }
+        // for (i = 1; i <= i_max; i++ ) {
+        //     for (j = 1; j <= j_max; j++) {
+        //         RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
+        //     }
+        // }
+        cudaCalculateRHS(F, G, RHS, i_max, j_max, delta_t, delta_x, delta_y);
         printf("RHS calculated!\n");
 
         // Call the CUDA kernel for SOR
         cudaSOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
         printf("SOR complete!\n");
 
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                if (i <= i_max - 1) u[i][j] = F[i][j] - delta_t * dp_dx(p, i, j, delta_x);
-                if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
-            }
-        }
+        // for (i = 1; i <= i_max; i++ ) {
+        //     for (j = 1; j <= j_max; j++) {
+        //         if (i <= i_max - 1) u[i][j] = F[i][j] - delta_t * dp_dx(p, i, j, delta_x);
+        //         if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
+        //     }
+        // }
+        cudaUpdateVelocity(u, v, F, G, p, i_max, j_max, delta_t, delta_x, delta_y);
         printf("Velocities updated!\n");
 
         if (n % n_print == 0) {

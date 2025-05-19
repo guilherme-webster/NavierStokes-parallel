@@ -138,6 +138,36 @@ __global__ void UpdateBoundaryKernel(double* p, int i_max, int j_max) {
     }
 }
 
+// Kernel to set velocity boundary conditions
+__global__ void SetVelocityBoundaryKernel(double* u, double* v, int i_max, int j_max, double lid_velocity) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    // Top lid (drives the flow)
+    if (i >= 1 && i <= i_max && j == j_max) {
+        u[i * (j_max + 2) + j] = 2.0 * lid_velocity - u[i * (j_max + 2) + (j-1)];
+        v[i * (j_max + 2) + j] = 0.0;
+    }
+    
+    // Bottom wall (no-slip)
+    if (i >= 1 && i <= i_max && j == 0) {
+        u[i * (j_max + 2) + j] = -u[i * (j_max + 2) + (j+1)];  // Reflection
+        v[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
+    }
+    
+    // Left wall (no-slip)
+    if (j >= 1 && j <= j_max && i == 0) {
+        u[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
+        v[i * (j_max + 2) + j] = -v[(i+1) * (j_max + 2) + j];  // Reflection
+    }
+    
+    // Right wall (no-slip)
+    if (j >= 1 && j <= j_max && i == i_max+1) {
+        u[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
+        v[i * (j_max + 2) + j] = -v[(i-1) * (j_max + 2) + j];  // Reflection
+    }
+}
+
 __global__ void SubdomainSORKernel(double* p, double* p_out, double* RHS, 
                                   int i_max, int j_max, double omega, double dxdx, double dydy,
                                   int subdomain_idx, int num_subdomains_x, int num_subdomains_y,
@@ -345,7 +375,7 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     CUDACHECK(cudaMalloc((void**)&d_RHS, size));
     CUDACHECK(cudaMalloc((void**)&d_norm, sizeof(double)));
     
-    // Create flattened host arrays
+    // Create flattened host arrays and speed variables
     double *h_p = (double*)malloc(size);
     double *h_res = (double*)malloc(size);
     double *h_RHS = (double*)malloc(size);
@@ -392,9 +422,6 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     double h_res_norm = 1.0;
     
     while (it < max_it && h_res_norm > convergence_threshold) {
-        // Update boundary conditions directly on the device
-        UpdateBoundaryKernel<<<gridSize, blockSize>>>(device_ptr, i_max, j_max);
-        CUDACHECK(cudaGetLastError());
         
         // Process all subdomains (domain decomposition approach)
         for (int subdomain = 0; subdomain < total_subdomains; subdomain++) {
@@ -485,4 +512,389 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     free(h_RHS);
     
     return (it < max_it) ? 0 : -1;
+}
+
+__global__ void L2NormKernel(double* m, int i_max, int j_max, double* d_norm) {
+    __shared__ double s_norm[BLOCK_SIZE * BLOCK_SIZE];
+    
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    
+    double local_norm = 0.0;
+    if (i <= i_max && j <= j_max) {
+        double val = m[i * (j_max + 2) + j];
+        local_norm = val * val;
+    }
+    
+    s_norm[tid] = local_norm;
+    __syncthreads();
+    
+    // Parallel reduction
+    for (int stride = blockDim.x * blockDim.y / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            s_norm[tid] += s_norm[tid + stride];
+        }
+        __syncthreads();
+    }
+    
+    // First thread writes result
+    if (tid == 0) {
+        atomicAdd(d_norm, s_norm[0]);
+    }
+}
+
+double cudaL2(double** m, int i_max, int j_max) {
+    // Allocate device memory
+    double *d_m, *d_norm;
+    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    CUDACHECK(cudaMalloc((void**)&d_m, size));
+    CUDACHECK(cudaMalloc((void**)&d_norm, sizeof(double)));
+    
+    // Create flattened host array
+    double *h_m = (double*)malloc(size);
+    
+    // Copy from 2D array to flattened array
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            h_m[i * (j_max + 2) + j] = m[i][j];
+        }
+    }
+    
+    // Copy data to device
+    CUDACHECK(cudaMemcpy(d_m, h_m, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemset(d_norm, 0, sizeof(double)));
+    
+    // Set up grid and block dimensions
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                 (j_max + blockSize.y - 1) / blockSize.y);
+    
+    // Launch kernel
+    L2NormKernel<<<gridSize, blockSize>>>(d_m, i_max, j_max, d_norm);
+    CUDACHECK(cudaGetLastError());
+    
+    // Get result from device
+    double norm_value = 0.0;
+    CUDACHECK(cudaMemcpy(&norm_value, d_norm, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Calculate final norm
+    double l2_norm = sqrt(norm_value / (i_max * j_max));
+    
+    // Free memory
+    CUDACHECK(cudaFree(d_m));
+    CUDACHECK(cudaFree(d_norm));
+    free(h_m);
+    
+    return l2_norm;
+}
+
+__global__ void FGKernel(double* F, double* G, double* u, double* v, 
+                        int i_max, int j_max, double Re, double g_x, double g_y, 
+                        double delta_t, double delta_x, double delta_y, double gamma) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i > i_max || j > j_max) return;
+    
+    double du2dx, duvdy, d2udx2, d2udy2;
+    double duvdx, dv2dy, d2vdx2, d2vdy2;
+    double alpha = 0.9;  // Donor cell parameter
+    
+    // F calculation for internal points
+    if (i < i_max) {
+        // Convection terms
+        du2dx = ((u[i * (j_max + 2) + j] + u[(i+1) * (j_max + 2) + j]) * 
+                (u[i * (j_max + 2) + j] + u[(i+1) * (j_max + 2) + j]) / 4.0 - 
+                (u[(i-1) * (j_max + 2) + j] + u[i * (j_max + 2) + j]) * 
+                (u[(i-1) * (j_max + 2) + j] + u[i * (j_max + 2) + j]) / 4.0) / delta_x;
+        
+        du2dx += alpha * ((fabs(u[i * (j_max + 2) + j] + u[(i+1) * (j_max + 2) + j]) * 
+                         (u[i * (j_max + 2) + j] - u[(i+1) * (j_max + 2) + j]) / 4.0) - 
+                        (fabs(u[(i-1) * (j_max + 2) + j] + u[i * (j_max + 2) + j]) * 
+                         (u[(i-1) * (j_max + 2) + j] - u[i * (j_max + 2) + j]) / 4.0)) / delta_x;
+        
+        duvdy = ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) * 
+                (u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 4.0 - 
+                (v[i * (j_max + 2) + (j-1)] + v[(i+1) * (j_max + 2) + (j-1)]) * 
+                (u[i * (j_max + 2) + (j-1)] + u[i * (j_max + 2) + j]) / 4.0) / delta_y;
+        
+        duvdy += alpha * ((fabs(v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) * 
+                         (u[i * (j_max + 2) + j] - u[i * (j_max + 2) + (j+1)]) / 4.0) - 
+                        (fabs(v[i * (j_max + 2) + (j-1)] + v[(i+1) * (j_max + 2) + (j-1)]) * 
+                         (u[i * (j_max + 2) + (j-1)] - u[i * (j_max + 2) + j]) / 4.0)) / delta_y;
+        
+        // Diffusion terms
+        d2udx2 = (u[(i+1) * (j_max + 2) + j] - 2.0 * u[i * (j_max + 2) + j] + 
+                 u[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
+        
+        d2udy2 = (u[i * (j_max + 2) + (j+1)] - 2.0 * u[i * (j_max + 2) + j] + 
+                 u[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
+        
+        F[i * (j_max + 2) + j] = u[i * (j_max + 2) + j] + 
+                                delta_t * (1.0 / Re * (d2udx2 + d2udy2) - du2dx - duvdy + g_x);
+    }
+    
+    // G calculation for internal points
+    if (j < j_max) {
+        // Convection terms
+        duvdx = ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) * 
+                (v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 4.0 - 
+                (u[(i-1) * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + (j+1)]) * 
+                (v[(i-1) * (j_max + 2) + j] + v[i * (j_max + 2) + j]) / 4.0) / delta_x;
+        
+        duvdx += alpha * ((fabs(u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) * 
+                         (v[i * (j_max + 2) + j] - v[(i+1) * (j_max + 2) + j]) / 4.0) - 
+                        (fabs(u[(i-1) * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + (j+1)]) * 
+                         (v[(i-1) * (j_max + 2) + j] - v[i * (j_max + 2) + j]) / 4.0)) / delta_x;
+        
+        dv2dy = ((v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j+1)]) * 
+                (v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j+1)]) / 4.0 - 
+                (v[i * (j_max + 2) + (j-1)] + v[i * (j_max + 2) + j]) * 
+                (v[i * (j_max + 2) + (j-1)] + v[i * (j_max + 2) + j]) / 4.0) / delta_y;
+        
+        dv2dy += alpha * ((fabs(v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j+1)]) * 
+                         (v[i * (j_max + 2) + j] - v[i * (j_max + 2) + (j+1)]) / 4.0) - 
+                        (fabs(v[i * (j_max + 2) + (j-1)] + v[i * (j_max + 2) + j]) * 
+                         (v[i * (j_max + 2) + (j-1)] - v[i * (j_max + 2) + j]) / 4.0)) / delta_y;
+        
+        // Diffusion terms
+        d2vdx2 = (v[(i+1) * (j_max + 2) + j] - 2.0 * v[i * (j_max + 2) + j] + 
+                 v[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
+        
+        d2vdy2 = (v[i * (j_max + 2) + (j+1)] - 2.0 * v[i * (j_max + 2) + j] + 
+                 v[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
+        
+        G[i * (j_max + 2) + j] = v[i * (j_max + 2) + j] + 
+                                delta_t * (1.0 / Re * (d2vdx2 + d2vdy2) - duvdx - dv2dy + g_y);
+    }
+}
+
+void cudaFG(double** F, double** G, double** u, double** v, int i_max, int j_max, 
+           double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
+    // Allocate device memory
+    double *d_F, *d_G, *d_u, *d_v;
+    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    CUDACHECK(cudaMalloc((void**)&d_F, size));
+    CUDACHECK(cudaMalloc((void**)&d_G, size));
+    CUDACHECK(cudaMalloc((void**)&d_u, size));
+    CUDACHECK(cudaMalloc((void**)&d_v, size));
+    
+    // Create flattened host arrays
+    double *h_F = (double*)malloc(size);
+    double *h_G = (double*)malloc(size);
+    double *h_u = (double*)malloc(size);
+    double *h_v = (double*)malloc(size);
+    
+    // Copy from 2D arrays to flattened arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            h_F[i * (j_max + 2) + j] = F[i][j];
+            h_G[i * (j_max + 2) + j] = G[i][j];
+            h_u[i * (j_max + 2) + j] = u[i][j];
+            h_v[i * (j_max + 2) + j] = v[i][j];
+        }
+    }
+    
+    // Copy data to device
+    CUDACHECK(cudaMemcpy(d_F, h_F, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_G, h_G, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_u, h_u, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_v, h_v, size, cudaMemcpyHostToDevice));
+    
+    // Set up grid and block dimensions
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                 (j_max + blockSize.y - 1) / blockSize.y);
+    
+    // Launch kernel
+    FGKernel<<<gridSize, blockSize>>>(d_F, d_G, d_u, d_v, i_max, j_max, Re, g_x, g_y, 
+                                    delta_t, delta_x, delta_y, gamma);
+    CUDACHECK(cudaGetLastError());
+    
+    // Copy results back
+    CUDACHECK(cudaMemcpy(h_F, d_F, size, cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(h_G, d_G, size, cudaMemcpyDeviceToHost));
+    
+    // Copy from flattened arrays back to 2D arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            F[i][j] = h_F[i * (j_max + 2) + j];
+            G[i][j] = h_G[i * (j_max + 2) + j];
+        }
+    }
+    
+    // Free memory
+    CUDACHECK(cudaFree(d_F));
+    CUDACHECK(cudaFree(d_G));
+    CUDACHECK(cudaFree(d_u));
+    CUDACHECK(cudaFree(d_v));
+    free(h_F);
+    free(h_G);
+    free(h_u);
+    free(h_v);
+}
+
+// Add this after the FG implementation
+
+__global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G, double* p, 
+                                    int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i > i_max || j > j_max) return;
+    
+    // Update u velocity (using forward difference for dp/dx)
+    if (i < i_max) {
+        double dp_dx = (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
+        u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * dp_dx;
+    }
+    
+    // Update v velocity (using forward difference for dp/dy)
+    if (j < j_max) {
+        double dp_dy = (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+        v[i * (j_max + 2) + j] = G[i * (j_max + 2) + j] - delta_t * dp_dy;
+    }
+}
+
+void cudaUpdateVelocity(double** u, double** v, double** F, double** G, double** p, 
+                      int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    // Allocate device memory
+    double *d_u, *d_v, *d_F, *d_G, *d_p;
+    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    CUDACHECK(cudaMalloc((void**)&d_u, size));
+    CUDACHECK(cudaMalloc((void**)&d_v, size));
+    CUDACHECK(cudaMalloc((void**)&d_F, size));
+    CUDACHECK(cudaMalloc((void**)&d_G, size));
+    CUDACHECK(cudaMalloc((void**)&d_p, size));
+    
+    // Create flattened host arrays
+    double *h_u = (double*)malloc(size);
+    double *h_v = (double*)malloc(size);
+    double *h_F = (double*)malloc(size);
+    double *h_G = (double*)malloc(size);
+    double *h_p = (double*)malloc(size);
+    
+    // Copy from 2D arrays to flattened arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            h_u[i * (j_max + 2) + j] = u[i][j];
+            h_v[i * (j_max + 2) + j] = v[i][j];
+            h_F[i * (j_max + 2) + j] = F[i][j];
+            h_G[i * (j_max + 2) + j] = G[i][j];
+            h_p[i * (j_max + 2) + j] = p[i][j];
+        }
+    }
+    
+    // Copy data to device
+    CUDACHECK(cudaMemcpy(d_u, h_u, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_v, h_v, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_F, h_F, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_G, h_G, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_p, h_p, size, cudaMemcpyHostToDevice));
+    
+    // Set up grid and block dimensions
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                 (j_max + blockSize.y - 1) / blockSize.y);
+    
+    // Launch kernel
+    UpdateVelocityKernel<<<gridSize, blockSize>>>(d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
+    CUDACHECK(cudaGetLastError());
+    
+    // Copy results back
+    CUDACHECK(cudaMemcpy(h_u, d_u, size, cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(h_v, d_v, size, cudaMemcpyDeviceToHost));
+    
+    // Copy from flattened arrays back to 2D arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            u[i][j] = h_u[i * (j_max + 2) + j];
+            v[i][j] = h_v[i * (j_max + 2) + j];
+        }
+    }
+    
+    // Free memory
+    CUDACHECK(cudaFree(d_u));
+    CUDACHECK(cudaFree(d_v));
+    CUDACHECK(cudaFree(d_F));
+    CUDACHECK(cudaFree(d_G));
+    CUDACHECK(cudaFree(d_p));
+    free(h_u);
+    free(h_v);
+    free(h_F);
+    free(h_G);
+    free(h_p);
+}
+
+// Add this after the UpdateVelocityKernel implementation
+
+__global__ void CalculateRHSKernel(double* F, double* G, double* RHS,
+                                int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max) {
+        RHS[i * (j_max + 2) + j] = 1.0 / delta_t * 
+                                  ((F[i * (j_max + 2) + j] - F[(i-1) * (j_max + 2) + j]) / delta_x + 
+                                   (G[i * (j_max + 2) + j] - G[i * (j_max + 2) + (j-1)]) / delta_y);
+    }
+}
+
+void cudaCalculateRHS(double** F, double** G, double** RHS, 
+                   int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    // Allocate device memory
+    double *d_F, *d_G, *d_RHS;
+    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    CUDACHECK(cudaMalloc((void**)&d_F, size));
+    CUDACHECK(cudaMalloc((void**)&d_G, size));
+    CUDACHECK(cudaMalloc((void**)&d_RHS, size));
+    
+    // Create flattened host arrays
+    double *h_F = (double*)malloc(size);
+    double *h_G = (double*)malloc(size);
+    double *h_RHS = (double*)malloc(size);
+    
+    // Copy from 2D arrays to flattened arrays
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            h_F[i * (j_max + 2) + j] = F[i][j];
+            h_G[i * (j_max + 2) + j] = G[i][j];
+        }
+    }
+    
+    // Copy data to device
+    CUDACHECK(cudaMemcpy(d_F, h_F, size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(d_G, h_G, size, cudaMemcpyHostToDevice));
+    
+    // Set up grid and block dimensions
+    dim3 blockSize(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                 (j_max + blockSize.y - 1) / blockSize.y);
+    
+    // Launch kernel
+    CalculateRHSKernel<<<gridSize, blockSize>>>(d_F, d_G, d_RHS, i_max, j_max, delta_t, delta_x, delta_y);
+    CUDACHECK(cudaGetLastError());
+    
+    // Copy results back
+    CUDACHECK(cudaMemcpy(h_RHS, d_RHS, size, cudaMemcpyDeviceToHost));
+    
+    // Copy from flattened array back to 2D array
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            RHS[i][j] = h_RHS[i * (j_max + 2) + j];
+        }
+    }
+    
+    // Free memory
+    CUDACHECK(cudaFree(d_F));
+    CUDACHECK(cudaFree(d_G));
+    CUDACHECK(cudaFree(d_RHS));
+    free(h_F);
+    free(h_G);
+    free(h_RHS);
 }
