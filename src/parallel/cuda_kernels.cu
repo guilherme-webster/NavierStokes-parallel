@@ -56,7 +56,7 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     int it = 0;
     double dydy = delta_y * delta_y;
     double dxdx = delta_x * delta_x;
-    double norm_p = 0.0;
+    double norm_p = L2(p, i_max, j_max);
     
     // Allocate device memory for flattened arrays
     double *d_p, *d_res, *d_RHS;
@@ -85,14 +85,6 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     //CUDACHECK(cudaMemcpy(d_res, h_res, size, cudaMemcpyHostToDevice));
     // Initialize residual to zero
     CUDACHECK(cudaMemset(d_res, 0, size));
-    
-    // Calculate initial norm
-    for (int i = 1; i <= i_max; i++) {
-        for (int j = 1; j <= j_max; j++) {
-            norm_p += p[i][j] * p[i][j];
-        }
-    }
-    norm_p = sqrt(norm_p / (i_max * j_max));
     
     // Grid and block dimensions
     dim3 blockSize(16, 16);
