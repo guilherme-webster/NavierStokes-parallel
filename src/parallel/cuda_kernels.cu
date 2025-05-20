@@ -17,156 +17,6 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 #define BLOCK_SIZE 16
 #define OVERLAP 2  // Overlap size between subdomains
 
-// 1. Shared memory optimized kernels
-__global__ void RedSORKernelShared(double* p, double* p_out, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
-    // Shared memory for tile plus halo cells
-    __shared__ double s_p[BLOCK_SIZE+2][BLOCK_SIZE+2];
-    
-    // Global indices
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    // Local indices within shared memory (with offset for halo)
-    int tx = threadIdx.x + 1;
-    int ty = threadIdx.y + 1;
-    
-    // Load center tile
-    if (i <= i_max && j <= j_max) {
-        s_p[ty][tx] = p[i * (j_max + 2) + j];
-    }
-    
-    // Load halo cells (each thread loads its neighborhood)
-    if (threadIdx.x == 0 && i > 1) { // Left halo
-        s_p[ty][0] = p[(i-1) * (j_max + 2) + j];
-    }
-    if (threadIdx.x == BLOCK_SIZE-1 && i < i_max) { // Right halo
-        s_p[ty][tx+1] = p[(i+1) * (j_max + 2) + j];
-    }
-    if (threadIdx.y == 0 && j > 1) { // Bottom halo
-        s_p[0][tx] = p[i * (j_max + 2) + (j-1)];
-    }
-    if (threadIdx.y == BLOCK_SIZE-1 && j < j_max) { // Top halo
-        s_p[ty+1][tx] = p[i * (j_max + 2) + (j+1)];
-    }
-    
-    __syncthreads();  // Ensure all data is loaded
-    
-    // Red SOR update
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
-        double new_p = (1.0 - omega) * s_p[ty][tx] + 
-            omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((s_p[ty][tx+1] + s_p[ty][tx-1]) / dxdx + 
-             (s_p[ty+1][tx] + s_p[ty-1][tx]) / dydy - 
-             RHS[i * (j_max + 2) + j]);
-        
-        // Write back to output buffer
-        p_out[i * (j_max + 2) + j] = new_p;
-    } else if (i <= i_max && j <= j_max) {
-        // Just copy value for black points
-        p_out[i * (j_max + 2) + j] = p[i * (j_max + 2) + j];
-    }
-}
-
-__global__ void BlackSORKernelShared(double* p, double* p_out, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
-    // Shared memory for tile plus halo cells
-    __shared__ double s_p[BLOCK_SIZE+2][BLOCK_SIZE+2];
-    
-    // Global indices
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    // Local indices within shared memory (with offset for halo)
-    int tx = threadIdx.x + 1;
-    int ty = threadIdx.y + 1;
-    
-    // Load center tile
-    if (i <= i_max && j <= j_max) {
-        s_p[ty][tx] = p[i * (j_max + 2) + j];
-    }
-    
-    // Load halo cells (each thread loads its neighborhood)
-    if (threadIdx.x == 0 && i > 1) { // Left halo
-        s_p[ty][0] = p[(i-1) * (j_max + 2) + j];
-    }
-    if (threadIdx.x == BLOCK_SIZE-1 && i < i_max) { // Right halo
-        s_p[ty][tx+1] = p[(i+1) * (j_max + 2) + j];
-    }
-    if (threadIdx.y == 0 && j > 1) { // Bottom halo
-        s_p[0][tx] = p[i * (j_max + 2) + (j-1)];
-    }
-    if (threadIdx.y == BLOCK_SIZE-1 && j < j_max) { // Top halo
-        s_p[ty+1][tx] = p[i * (j_max + 2) + (j+1)];
-    }
-    
-    __syncthreads();  // Ensure all data is loaded
-    
-    // Black SOR update
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
-        double new_p = (1.0 - omega) * s_p[ty][tx] + 
-            omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((s_p[ty][tx+1] + s_p[ty][tx-1]) / dxdx + 
-             (s_p[ty+1][tx] + s_p[ty-1][tx]) / dydy - 
-             RHS[i * (j_max + 2) + j]);
-        
-        // Write back to output buffer
-        p_out[i * (j_max + 2) + j] = new_p;
-    } else if (i <= i_max && j <= j_max) {
-        // Just copy value for red points
-        p_out[i * (j_max + 2) + j] = p[i * (j_max + 2) + j];
-    }
-}
-
-// 2. Domain decomposition kernels
-__global__ void UpdateBoundaryKernel(double* p, int i_max, int j_max) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    // Update bottom and top boundaries
-    if (i <= i_max && j == 1) {
-        p[i * (j_max + 2) + 0] = p[i * (j_max + 2) + 1]; // Bottom boundary
-    }
-    if (i <= i_max && j == j_max) {
-        p[i * (j_max + 2) + (j_max + 1)] = p[i * (j_max + 2) + j_max]; // Top boundary
-    }
-    
-    // Update left and right boundaries
-    if (j <= j_max && i == 1) {
-        p[0 * (j_max + 2) + j] = p[1 * (j_max + 2) + j]; // Left boundary
-    }
-    if (j <= j_max && i == i_max) {
-        p[(i_max + 1) * (j_max + 2) + j] = p[i_max * (j_max + 2) + j]; // Right boundary
-    }
-}
-
-// Kernel to set velocity boundary conditions
-__global__ void SetVelocityBoundaryKernel(double* u, double* v, int i_max, int j_max, double lid_velocity) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    
-    // Top lid (drives the flow)
-    if (i >= 1 && i <= i_max && j == j_max) {
-        u[i * (j_max + 2) + j] = 2.0 * lid_velocity - u[i * (j_max + 2) + (j-1)];
-        v[i * (j_max + 2) + j] = 0.0;
-    }
-    
-    // Bottom wall (no-slip)
-    if (i >= 1 && i <= i_max && j == 0) {
-        u[i * (j_max + 2) + j] = -u[i * (j_max + 2) + (j+1)];  // Reflection
-        v[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
-    }
-    
-    // Left wall (no-slip)
-    if (j >= 1 && j <= j_max && i == 0) {
-        u[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
-        v[i * (j_max + 2) + j] = -v[(i+1) * (j_max + 2) + j];  // Reflection
-    }
-    
-    // Right wall (no-slip)
-    if (j >= 1 && j <= j_max && i == i_max+1) {
-        u[i * (j_max + 2) + j] = 0.0;  // No flow through boundary
-        v[i * (j_max + 2) + j] = -v[(i-1) * (j_max + 2) + j];  // Reflection
-    }
-}
 
 __global__ void SubdomainSORKernel(double* p, double* p_out, double* RHS, 
                                   int i_max, int j_max, double omega, double dxdx, double dydy,
@@ -287,31 +137,6 @@ __global__ void SubdomainSORKernel(double* p, double* p_out, double* RHS,
     // Copy final result back to p_out if needed
     if (iter_per_subdomain % 2 == 1 && i <= i_end && j <= j_end) {
         p_out[i * (j_max + 2) + j] = src[i * (j_max + 2) + j];
-    }
-}
-
-// Original kernels kept for reference (removed in final deployment)
-__global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
-        p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
-            omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
-            (p[i * (j_max + 2) + (j + 1)] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j]);
-    }
-}
-
-__global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
-        p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
-            omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
-            (p[i * (j_max + 2) + (j + 1)] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j]);
     }
 }
 
@@ -451,7 +276,11 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
                 subdomain, num_subdomains_x, num_subdomains_y,
                 iter_per_subdomain
             );
-            CUDACHECK(cudaGetLastError());
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                printf("CUDA Error in SUBDOMAINSORKERNEL: %s\n", cudaGetErrorString(err));
+                exit(-1);
+}
         }
         
         // Swap buffers
@@ -465,11 +294,19 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
             
             // Calculate residual
             CalculateResidualKernel<<<gridSize, blockSize>>>(device_ptr, d_res, d_RHS, i_max, j_max, dxdx, dydy);
-            CUDACHECK(cudaGetLastError());
+            cudaError_t err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                printf("CUDA Error in CALCULATERESIDUALKERNEL: %s\n", cudaGetErrorString(err));
+                exit(-1);
+            }
             
             // Calculate residual norm
             CalculateResidualNormKernel<<<gridSize, blockSize>>>(d_res, i_max, j_max, d_norm);
-            CUDACHECK(cudaGetLastError());
+            err = cudaGetLastError();
+            if (err != cudaSuccess) {
+                printf("CUDA Error in CALCULATERESIDUALNORMKERNEL: %s\n", cudaGetErrorString(err));
+                exit(-1);
+            }
             
             // Get norm from device
             double norm_value = 0.0;
@@ -573,7 +410,11 @@ double cudaL2(double** m, int i_max, int j_max) {
     
     // Launch kernel
     L2NormKernel<<<gridSize, blockSize>>>(d_m, i_max, j_max, d_norm);
-    CUDACHECK(cudaGetLastError());
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in L2NORMKERNELn: %s\n", cudaGetErrorString(err));
+        exit(-1);
+    }
     
     // Get result from device
     double norm_value = 0.0;
@@ -712,7 +553,11 @@ void cudaFG(double** F, double** G, double** u, double** v, int i_max, int j_max
     // Launch kernel
     FGKernel<<<gridSize, blockSize>>>(d_F, d_G, d_u, d_v, i_max, j_max, Re, g_x, g_y, 
                                     delta_t, delta_x, delta_y, gamma);
-    CUDACHECK(cudaGetLastError());
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in FGKERNEl: %s\n", cudaGetErrorString(err));
+        exit(-1);
+}
     
     // Copy results back
     CUDACHECK(cudaMemcpy(h_F, d_F, size, cudaMemcpyDeviceToHost));
@@ -803,7 +648,11 @@ void cudaUpdateVelocity(double** u, double** v, double** F, double** G, double**
     
     // Launch kernel
     UpdateVelocityKernel<<<gridSize, blockSize>>>(d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
-    CUDACHECK(cudaGetLastError());
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in UPDATEVELOCITYKERNEL: %s\n", cudaGetErrorString(err));
+        exit(-1);
+}
     
     // Copy results back
     CUDACHECK(cudaMemcpy(h_u, d_u, size, cudaMemcpyDeviceToHost));
@@ -878,7 +727,11 @@ void cudaCalculateRHS(double** F, double** G, double** RHS,
     
     // Launch kernel
     CalculateRHSKernel<<<gridSize, blockSize>>>(d_F, d_G, d_RHS, i_max, j_max, delta_t, delta_x, delta_y);
-    CUDACHECK(cudaGetLastError());
+   cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA Error in CALCULATERHSKERNEL: %s\n", cudaGetErrorString(err));
+        exit(-1);
+}
     
     // Copy results back
     CUDACHECK(cudaMemcpy(h_RHS, d_RHS, size, cudaMemcpyDeviceToHost));
