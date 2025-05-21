@@ -98,7 +98,7 @@ __global__ void CalculateRHSKernel(double* F, double* G, double* RHS,
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    if (i <= i_max && j <= j_max) {
+    if (i <= i_max && j <= j_max && i > 0 && j > 0) {
         RHS[i * (j_max + 2) + j] = 1.0 / delta_t * (
             (F[i * (j_max + 2) + j] - F[(i-1) * (j_max + 2) + j]) / delta_x + 
             (G[i * (j_max + 2) + j] - G[i * (j_max + 2) + (j-1)]) / delta_y
@@ -111,7 +111,7 @@ __global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, doubl
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
 
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
+    if (i <= i_max && j <= j_max && i > 0 && j > 0 && (i + j) % 2 == 0) {
         p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
             ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
@@ -123,7 +123,7 @@ __global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, dou
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
 
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
+    if (i <= i_max && j <= j_max && i > 0 && j > 0 && (i + j) % 2 == 1) {
         p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
             ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
@@ -156,7 +156,7 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
 
-    if (i <= i_max && j <= j_max) {
+    if (i <= i_max && j <= j_max && i > 0 && j > 0) {
         res[i * (j_max + 2) + j] = (p[(i + 1) * (j_max + 2) + j] - 2.0 * p[i * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
             (p[i * (j_max + 2) + (j + 1)] - 2.0 * p[i * (j_max + 2) + j] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j];
     }
@@ -167,7 +167,7 @@ __global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G,
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    if (i < i_max && j <= j_max) {
+    if (i < i_max && j <= j_max && j > 0) {
         u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
     }
     

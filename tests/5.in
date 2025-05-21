@@ -4,11 +4,11 @@
 1024        # j_max
 1.0	        # Side a length
 1.0	        # Side b length
-0.05        # Time to integrate
+0.01        # Time to integrate
 10000.0 	# Reynolds number
 0.0 	    # x-component of g
 0.0 	    # y-component of g
-1.0		    # Security factor tau.
+0.05 	    # Security factor tau.
 1.7         # Relaxation factor for SOR. (1.0 is Gauß-Seidel) (higher relax factor)
 0.00001      # Relative tolerance for SOR. (tigher)
 1000         # Maximum iterations for SOR.

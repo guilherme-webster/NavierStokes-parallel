@@ -13,9 +13,15 @@
 
 // CUDA kernel for finding the maximum value in an array
 __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_max) {
-    // Use block dimensions that match your indexing
-    int threadId = threadIdx.y * blockDim.x + threadIdx.x;
+    // Checking thread bounds explicitly
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int threadId = ty * blockDim.x + tx;
     int totalThreads = blockDim.x * blockDim.y;
+    
+    // Add this safety check to prevent shared memory out-of-bounds
+    if (threadId >= 256) return;
+    
     __shared__ double s_max[256];
     
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
@@ -149,11 +155,20 @@ int main(int argc, char* argv[])
     CUDACHECK(cudaMallocManaged((void**)&d_u_max, sizeof(double)));
     CUDACHECK(cudaMallocManaged((void**)&d_v_max, sizeof(double)));
 
+    memset(d_u, 0, size);
+    memset(d_v, 0, size);
+    memset(d_p, 0, size);
+
     // Initialize
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
+    for (int i = 0; i <= i_max; i++) {
+        for (int j = 0; j <= j_max; j++) {
             d_u[i * (j_max + 2) + j] = u[i][j];
             d_v[i * (j_max + 2) + j] = v[i][j];
+        }
+    }
+
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
             d_p[i * (j_max + 2) + j] = p[i][j];
         }
     }
@@ -194,8 +209,10 @@ int main(int argc, char* argv[])
         CUDACHECK(cudaDeviceSynchronize());  // Ensure max values are computed
 
         // Access max values directly from managed memory - no copies needed
-        double delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
-                            delta_x / fabs(*d_u_max), delta_y / fabs(*d_v_max));
+        double safe_u_max = fabs(*d_u_max) < 1e-9 ? 1e-9 : fabs(*d_u_max);
+        double safe_v_max = fabs(*d_v_max) < 1e-9 ? 1e-9 : fabs(*d_v_max);
+        double delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), // Corrected denominator grouping
+                            delta_x / safe_u_max, delta_y / safe_v_max);
         gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
 
         // Set boundary conditions directly on GPU
@@ -278,11 +295,22 @@ int main(int argc, char* argv[])
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
     // Update the host arrays with results from device for final output
-        for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            u[i][j] = d_u[i * (j_max + 2) + j];
-            v[i][j] = d_v[i * (j_max + 2) + j];
-            p[i][j] = d_p[i * (j_max + 2) + j];
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            // Safe copy for p
+            if (i <= i_max + 1 && j <= j_max + 1) { // Check bounds for p (already correct)
+                p[i][j] = d_p[i * (j_max + 2) + j];
+            }
+
+            // Conditional copy for u based on its actual host allocation
+            if (i <= i_max && j <= j_max + 1) { // u is u[0..i_max][0..j_max+1]
+                u[i][j] = d_u[i * (j_max + 2) + j];
+            }
+
+            // Conditional copy for v based on its actual host allocation
+            if (i <= i_max + 1 && j <= j_max) { // v is v[0..i_max+1][0..j_max]
+                v[i][j] = d_v[i * (j_max + 2) + j];
+            }
         }
     }
 
@@ -290,11 +318,13 @@ int main(int argc, char* argv[])
     printf("\n==================== FINAL RESULTS ====================\n");
     printf("Simulation completed: %d steps in %.6f seconds\n", MAX_TIMESTEPS, time_spent);
     printf("Final time reached: %.6f\n", t);
-    printf("U-CENTER: %.6f\n", d_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
-    printf("V-CENTER: %.6f\n", d_v[(i_max/2) * (j_max + 2) + (j_max/2)]);
-    printf("P-CENTER: %.6f\n", d_p[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("U-CENTER: %.6f\n", d_u[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
+    printf("V-CENTER: %.6f\n", d_v[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
+    printf("P-CENTER: %.6f\n", d_p[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
     printf("Average time per step: %.6f seconds\n", time_spent/MAX_TIMESTEPS);
     printf("=========================================================\n");
+
+    fprintf(stderr, "%.6f\n", time_spent);
 
     // Free all memory
     CUDACHECK(cudaFree(d_u));
