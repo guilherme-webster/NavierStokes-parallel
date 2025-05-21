@@ -19,8 +19,7 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 
 // Integrated kernel that handles an entire Navier-Stokes timestep
 __global__ void NavierStokesStepKernel(
-    double* u, double* v, double* p, 
-    double* F, double* G, double* RHS, double* res,
+    double* u, double* v, double* p, double* F, double* G, double* RHS, double* res,
     int i_max, int j_max, double Re, double g_x, double g_y,
     double delta_t, double delta_x, double delta_y, double gamma,
     double omega, double eps, int max_sor_iter) {
@@ -33,7 +32,7 @@ __global__ void NavierStokesStepKernel(
     if (i > i_max || j > j_max) return;
     
     // Calculate F term
-    if (i < i_max) {
+    if (i < i_max and j > 0) {
         double u_central = u[i * (j_max + 2) + j];
         double v_average = (v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j] + 
                            v[i * (j_max + 2) + (j-1)] + v[(i+1) * (j_max + 2) + (j-1)]) * 0.25;
@@ -62,7 +61,7 @@ __global__ void NavierStokesStepKernel(
     }
     
     // Calculate G term
-    if (j < j_max) {
+    if (j < j_max && i > 0) {
         double v_central = v[i * (j_max + 2) + j];
         double u_average = (u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)] + 
                            u[(i-1) * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + (j+1)]) * 0.25;

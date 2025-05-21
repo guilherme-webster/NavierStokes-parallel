@@ -38,9 +38,16 @@ __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_m
     
     // Write result for this block to global memory
     if (threadId == 0) {
-        atomicMax((unsigned long long int*)max_val, 
-                 __double_as_longlong(s_max[0]));
-    }
+    unsigned long long int* address = (unsigned long long int*)max_val;
+    unsigned long long int old = *address;
+    unsigned long long int assumed;
+    do {
+        assumed = old;
+        double current_max = __longlong_as_double(assumed);
+        if (s_max[0] <= current_max) break;
+        old = atomicCAS(address, assumed, __double_as_longlong(s_max[0]));
+    } while (assumed != old);
+}
 }
 
 // CUDA kernel to set boundary conditions
@@ -271,8 +278,7 @@ int main(int argc, char* argv[])
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
     // Update the host arrays with results from device for final output
-    // This is only needed if you use the host arrays for writing results or other purposes
-    for (int i = 0; i <= i_max+1; i++) {
+        for (int i = 0; i <= i_max+1; i++) {
         for (int j = 0; j <= j_max+1; j++) {
             u[i][j] = d_u[i * (j_max + 2) + j];
             v[i][j] = d_v[i * (j_max + 2) + j];
