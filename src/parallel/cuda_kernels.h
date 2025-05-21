@@ -29,6 +29,10 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS,
 __global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G, double* p,
                                  int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 
+__global__ void MultiStepSORKernel(double* p, double* RHS, double* res, 
+                                   int i_max, int j_max, double omega, 
+                                   double dxdx, double dydy, int iterations);
+
 // Error checking helper
 void check_cuda(cudaError_t error, const char *filename, const int line);
 #define CUDACHECK(cmd) check_cuda(cmd, __FILE__, __LINE__)

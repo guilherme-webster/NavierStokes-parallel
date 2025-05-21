@@ -90,6 +90,44 @@ __global__ void setBoundaryConditionsKernel(
     }
 }
 
+__global__ void calculateResidualSumKernel(double* res, double* sum, int i_max, int j_max) {
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int threadId = ty * blockDim.x + tx;
+    int totalThreads = blockDim.x * blockDim.y;
+    
+    if (threadId >= 256) return; // Safety check
+    
+    __shared__ double s_sum[256];
+    
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    // Initialize shared memory
+    s_sum[threadId] = 0.0;
+    
+    // Load residual squared value
+    if (i <= i_max && j <= j_max) {
+        double val = res[i * (j_max + 2) + j];
+        s_sum[threadId] = val * val;
+    }
+    
+    __syncthreads();
+    
+    // Parallel reduction sum
+    for (int s = totalThreads / 2; s > 0; s >>= 1) {
+        if (threadId < s) {
+            s_sum[threadId] += s_sum[threadId + s];
+        }
+        __syncthreads();
+    }
+    
+    // Add block result to global sum using atomic operation
+    if (threadId == 0) {
+        atomicAdd(sum, s_sum[0]);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     double** u;     
@@ -99,7 +137,9 @@ int main(int argc, char* argv[])
     double** F;     
     double** G;     
     double** res;   
-    double** RHS;   
+    double** RHS;
+
+    double* d_sum;
 
     int i_max, j_max;                   
     double a, b;                        
@@ -154,6 +194,7 @@ int main(int argc, char* argv[])
     CUDACHECK(cudaMallocManaged((void**)&d_res, size));
     CUDACHECK(cudaMallocManaged((void**)&d_u_max, sizeof(double)));
     CUDACHECK(cudaMallocManaged((void**)&d_v_max, sizeof(double)));
+    CUDACHECK(cudaMallocManaged((void**)&d_sum, sizeof(double)));
 
     memset(d_u, 0, size);
     memset(d_v, 0, size);
@@ -202,11 +243,9 @@ int main(int argc, char* argv[])
         dim3 reduceBlock(16, 16);
         findMaxKernel<<<gridSize, reduceBlock>>>(d_u, d_u_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());  // Ensure max values are computed
         
         findMaxKernel<<<gridSize, reduceBlock>>>(d_v, d_v_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());  // Ensure max values are computed
 
         // Access max values directly from managed memory - no copies needed
         double safe_u_max = fabs(*d_u_max) < 1e-9 ? 1e-9 : fabs(*d_u_max);
@@ -219,7 +258,6 @@ int main(int argc, char* argv[])
         setBoundaryConditionsKernel<<<boundaryGridSize, blockSize>>>(
             d_u, d_v, i_max, j_max, problem, 1.0, t, f);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
 
         // Print progress occasionally
         if (timestep % 100 == 0) {
@@ -232,13 +270,11 @@ int main(int argc, char* argv[])
             d_u, d_v, NULL, d_F, d_G, NULL, NULL,
             i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma, 0.0, 0.0, 0);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
 
         // Calculate RHS directly on device
         CalculateRHSKernel<<<gridSize, blockSize>>>(
             d_F, d_G, d_RHS, i_max, j_max, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
 
         // SOR for pressure directly on device
         double dxdx = delta_x * delta_x;
@@ -247,44 +283,44 @@ int main(int argc, char* argv[])
         double residual = 1.0;
         
         while (it < max_it && residual > epsilon) {
-            // Update boundary conditions for pressure
-            UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
-            CUDACHECK(cudaGetLastError());
-            CUDACHECK(cudaDeviceSynchronize());
+            // Use multi-step SOR with internal iterations
+            int internal_iterations = 10;
             
-            // Red-black SOR iterations
-            RedSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
-            CUDACHECK(cudaGetLastError());
-            CUDACHECK(cudaDeviceSynchronize());
+            if (it + internal_iterations >= max_it) {
+                internal_iterations = max_it - it;
+            }
             
-            BlackSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
+            MultiStepSORKernel<<<gridSize, blockSize>>>(
+                d_p, d_RHS, (it % 10 == 0) ? d_res : NULL, 
+                i_max, j_max, omega, dxdx, dydy, internal_iterations);
             CUDACHECK(cudaGetLastError());
-            CUDACHECK(cudaDeviceSynchronize());
             
             // Check convergence occasionally
             if (it % 10 == 0) {
                 CalculateResidualKernel<<<gridSize, blockSize>>>(
                     d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
                 CUDACHECK(cudaGetLastError());
+                
+                // Reset sum to zero
+                *d_sum = 0.0;
+                
+                // Calculate sum of squares on GPU
+                calculateResidualSumKernel<<<gridSize, blockSize>>>(d_res, d_sum, i_max, j_max);
+                CUDACHECK(cudaGetLastError());
+                
+                // Ensure calculation is complete before accessing result
                 CUDACHECK(cudaDeviceSynchronize());
                 
-                // Compute residual norm directly with managed memory
-                residual = 0.0;
-                for (int i = 1; i <= i_max; i++) {
-                    for (int j = 1; j <= j_max; j++) {
-                        residual += d_res[i * (j_max + 2) + j] * d_res[i * (j_max + 2) + j];
-                    }
-                }
-                residual = sqrt(residual / (i_max * j_max));
+                // Calculate final norm
+                residual = sqrt(*d_sum / (i_max * j_max));
             }
-            it++;
+            it += internal_iterations;
         }
 
         // Update velocities directly on device
         UpdateVelocityKernel<<<gridSize, blockSize>>>(
             d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
 
         // Update time
         t += delta_t;
@@ -293,26 +329,6 @@ int main(int argc, char* argv[])
     // Stop timer
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-
-    // Update the host arrays with results from device for final output
-    for (int i = 0; i <= i_max + 1; i++) {
-        for (int j = 0; j <= j_max + 1; j++) {
-            // Safe copy for p
-            if (i <= i_max + 1 && j <= j_max + 1) { // Check bounds for p (already correct)
-                p[i][j] = d_p[i * (j_max + 2) + j];
-            }
-
-            // Conditional copy for u based on its actual host allocation
-            if (i <= i_max && j <= j_max + 1) { // u is u[0..i_max][0..j_max+1]
-                u[i][j] = d_u[i * (j_max + 2) + j];
-            }
-
-            // Conditional copy for v based on its actual host allocation
-            if (i <= i_max + 1 && j <= j_max) { // v is v[0..i_max+1][0..j_max]
-                v[i][j] = d_v[i * (j_max + 2) + j];
-            }
-        }
-    }
 
     // Final results - can directly access center values from managed memory
     printf("\n==================== FINAL RESULTS ====================\n");
@@ -336,8 +352,11 @@ int main(int argc, char* argv[])
     CUDACHECK(cudaFree(d_res));
     CUDACHECK(cudaFree(d_u_max));
     CUDACHECK(cudaFree(d_v_max));
+    CUDACHECK(cudaFree(d_sum));
 
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
 
     return 0;
 }
+
+//making the main loop itself a kernel

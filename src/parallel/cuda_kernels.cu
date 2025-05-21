@@ -24,72 +24,115 @@ __global__ void NavierStokesStepKernel(
     double delta_t, double delta_x, double delta_y, double gamma,
     double omega, double eps, int max_sor_iter) {
     
-    // Each thread handles one grid point
+    // Define shared memory - with halo regions for stencil operations
+    __shared__ double s_u[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    __shared__ double s_v[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    
+    // Global indices
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    // Local indices for shared memory (with offset for halo)
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    int s_width = blockDim.x + 2;
+    
+    // Load center values into shared memory
+    int s_idx = tx * s_width + ty;
+    int g_idx = i * (j_max + 2) + j;
+    
+    // Initialize shared memory with zeros for safety
+    s_u[s_idx] = 0.0;
+    s_v[s_idx] = 0.0;
+    
+    // Load valid data points
+    if (i <= i_max+1 && j <= j_max+1) {
+        s_u[s_idx] = u[g_idx];
+        s_v[s_idx] = v[g_idx];
+    }
+    
+    // Load halo regions - left and right columns
+    if (threadIdx.x == 0 && i > 1) {
+        s_u[(tx-1) * s_width + ty] = u[(i-1) * (j_max + 2) + j];
+        s_v[(tx-1) * s_width + ty] = v[(i-1) * (j_max + 2) + j];
+    }
+    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+        s_u[(tx+1) * s_width + ty] = u[(i+1) * (j_max + 2) + j];
+        s_v[(tx+1) * s_width + ty] = v[(i+1) * (j_max + 2) + j];
+    }
+    
+    // Load halo regions - top and bottom rows
+    if (threadIdx.y == 0 && j > 1) {
+        s_u[tx * s_width + (ty-1)] = u[i * (j_max + 2) + (j-1)];
+        s_v[tx * s_width + (ty-1)] = v[i * (j_max + 2) + (j-1)];
+    }
+    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+        s_u[tx * s_width + (ty+1)] = u[i * (j_max + 2) + (j+1)];
+        s_v[tx * s_width + (ty+1)] = v[i * (j_max + 2) + (j+1)];
+    }
+    
+    __syncthreads();
     
     // Skip boundary points and points outside the valid domain
     if (i > i_max || j > j_max) return;
     
-    // Calculate F term
-    if (i < i_max and j > 0) {
-        double u_central = u[i * (j_max + 2) + j];
-        double v_average = (v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j] + 
-                           v[i * (j_max + 2) + (j-1)] + v[(i+1) * (j_max + 2) + (j-1)]) * 0.25;
+    // Calculate F term using shared memory
+    if (i < i_max && j > 0) {
+        double u_central = s_u[tx * s_width + ty];
+        double v_average = (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty] + 
+                           s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * 0.25;
         
-        double du2_dx = ((u[i * (j_max + 2) + j] + u[(i+1) * (j_max + 2) + j])
-                       * (u[i * (j_max + 2) + j] + u[(i+1) * (j_max + 2) + j]) -
-                        (u[(i-1) * (j_max + 2) + j] + u[i * (j_max + 2) + j])
-                       * (u[(i-1) * (j_max + 2) + j] + u[i * (j_max + 2) + j]))
+        double du2_dx = ((s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty])
+                       * (s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) -
+                        (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty])
+                       * (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]))
                       / (4.0 * delta_x);
         
-        double duv_dy = ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j])
-                       * (u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) -
-                        (v[i * (j_max + 2) + (j-1)] + v[(i+1) * (j_max + 2) + (j-1)])
-                       * (u[i * (j_max + 2) + (j-1)] + u[i * (j_max + 2) + j]))
+        double duv_dy = ((s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty])
+                       * (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) -
+                        (s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)])
+                       * (s_u[tx * s_width + (ty-1)] + s_u[tx * s_width + ty]))
                       / (4.0 * delta_y);
         
-        double d2u_dx2 = (u[(i+1) * (j_max + 2) + j] - 2.0 * u[i * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + j])
+        double d2u_dx2 = (s_u[(tx+1) * s_width + ty] - 2.0 * s_u[tx * s_width + ty] + s_u[(tx-1) * s_width + ty])
                         / (delta_x * delta_x);
         
-        double d2u_dy2 = (u[i * (j_max + 2) + (j+1)] - 2.0 * u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j-1)])
+        double d2u_dy2 = (s_u[tx * s_width + (ty+1)] - 2.0 * s_u[tx * s_width + ty] + s_u[tx * s_width + (ty-1)])
                         / (delta_y * delta_y);
         
-        F[i * (j_max + 2) + j] = u_central + delta_t * (
-                               1.0/Re * (d2u_dx2 + d2u_dy2) -
-                               du2_dx - duv_dy + g_x);
+        F[g_idx] = u_central + delta_t * (
+                             1.0/Re * (d2u_dx2 + d2u_dy2) -
+                             du2_dx - duv_dy + g_x);
     }
     
-    // Calculate G term
+    // Calculate G term using shared memory
     if (j < j_max && i > 0) {
-        double v_central = v[i * (j_max + 2) + j];
-        double u_average = (u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)] + 
-                           u[(i-1) * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + (j+1)]) * 0.25;
+        double v_central = s_v[tx * s_width + ty];
+        double u_average = (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)] + 
+                           s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * 0.25;
         
-        double duv_dx = ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)])
-                       * (v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) -
-                        (u[(i-1) * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + (j+1)])
-                       * (v[(i-1) * (j_max + 2) + j] + v[i * (j_max + 2) + j]))
+        double duv_dx = ((s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)])
+                       * (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) -
+                        (s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)])
+                       * (s_v[(tx-1) * s_width + ty] + s_v[tx * s_width + ty]))
                       / (4.0 * delta_x);
         
-        double dv2_dy = ((v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j+1)])
-                       * (v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j+1)]) -
-                        (v[i * (j_max + 2) + (j-1)] + v[i * (j_max + 2) + j])
-                       * (v[i * (j_max + 2) + (j-1)] + v[i * (j_max + 2) + j]))
+        double dv2_dy = ((s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)])
+                       * (s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) -
+                        (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty])
+                       * (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]))
                       / (4.0 * delta_y);
         
-        double d2v_dx2 = (v[(i+1) * (j_max + 2) + j] - 2.0 * v[i * (j_max + 2) + j] + v[(i-1) * (j_max + 2) + j])
+        double d2v_dx2 = (s_v[(tx+1) * s_width + ty] - 2.0 * s_v[tx * s_width + ty] + s_v[(tx-1) * s_width + ty])
                         / (delta_x * delta_x);
         
-        double d2v_dy2 = (v[i * (j_max + 2) + (j+1)] - 2.0 * v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j-1)])
+        double d2v_dy2 = (s_v[tx * s_width + (ty+1)] - 2.0 * s_v[tx * s_width + ty] + s_v[tx * s_width + (ty-1)])
                         / (delta_y * delta_y);
         
-        G[i * (j_max + 2) + j] = v_central + delta_t * (
-                               1.0/Re * (d2v_dx2 + d2v_dy2) -
-                               duv_dx - dv2_dy + g_y);
+        G[g_idx] = v_central + delta_t * (
+                             1.0/Re * (d2v_dx2 + d2v_dy2) -
+                             duv_dx - dv2_dy + g_y);
     }
-    
-    // Global synchronization not available, use separate kernels for RHS and SOR
 }
 
 __global__ void CalculateRHSKernel(double* F, double* G, double* RHS, 
@@ -108,26 +151,108 @@ __global__ void CalculateRHSKernel(double* F, double* G, double* RHS,
 
 // Standard SOR kernels - using the Red-Black approach
 __global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
+    __shared__ double s_p[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    __shared__ double s_RHS[BLOCK_SIZE * BLOCK_SIZE];
+    
+    // Global indices
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
+    
+    // Local indices for shared memory
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    int s_width = blockDim.x + 2;
+    int s_idx = tx * s_width + ty;
+    int g_idx = i * (j_max + 2) + j;
+    int rhs_idx = threadIdx.x * blockDim.x + threadIdx.y;
+    
+    // Load center values
+    if (i <= i_max+1 && j <= j_max+1) {
+        s_p[s_idx] = p[g_idx];
+        if (i <= i_max && j <= j_max && i > 0 && j > 0) {
+            s_RHS[rhs_idx] = RHS[g_idx];
+        }
+    }
+    
+    // Load halo regions
+    if (threadIdx.x == 0 && i > 1) {
+        s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
+    }
+    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+        s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
+    }
+    if (threadIdx.y == 0 && j > 1) {
+        s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
+    }
+    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+        s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
+    }
+    
+    __syncthreads();
+    
+    // Update red points (i+j is even)
     if (i <= i_max && j <= j_max && i > 0 && j > 0 && (i + j) % 2 == 0) {
-        p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
+        s_p[s_idx] = (1.0 - omega) * s_p[s_idx] + 
             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
-            (p[i * (j_max + 2) + (j + 1)] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j]);
+            ((s_p[(tx+1) * s_width + ty] + s_p[(tx-1) * s_width + ty]) / dxdx + 
+            (s_p[tx * s_width + (ty+1)] + s_p[tx * s_width + (ty-1)]) / dydy - 
+            s_RHS[rhs_idx]);
+            
+        // Write back to global memory
+        p[g_idx] = s_p[s_idx];
     }
 }
 
 __global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
+    __shared__ double s_p[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    __shared__ double s_RHS[BLOCK_SIZE * BLOCK_SIZE];
+    
+    // Global indices
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
+    
+    // Local indices for shared memory
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    int s_width = blockDim.x + 2;
+    int s_idx = tx * s_width + ty;
+    int g_idx = i * (j_max + 2) + j;
+    int rhs_idx = threadIdx.x * blockDim.x + threadIdx.y;
+    
+    // Load center values
+    if (i <= i_max+1 && j <= j_max+1) {
+        s_p[s_idx] = p[g_idx];
+        if (i <= i_max && j <= j_max && i > 0 && j > 0) {
+            s_RHS[rhs_idx] = RHS[g_idx];
+        }
+    }
+    
+    // Load halo regions
+    if (threadIdx.x == 0 && i > 1) {
+        s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
+    }
+    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+        s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
+    }
+    if (threadIdx.y == 0 && j > 1) {
+        s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
+    }
+    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+        s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
+    }
+    
+    __syncthreads();
+    
+    // Update black points (i+j is odd)
     if (i <= i_max && j <= j_max && i > 0 && j > 0 && (i + j) % 2 == 1) {
-        p[i * (j_max + 2) + j] = (1.0 - omega) * p[i * (j_max + 2) + j] + 
+        s_p[s_idx] = (1.0 - omega) * s_p[s_idx] + 
             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
-            ((p[(i + 1) * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
-            (p[i * (j_max + 2) + (j + 1)] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j]);
+            ((s_p[(tx+1) * s_width + ty] + s_p[(tx-1) * s_width + ty]) / dxdx + 
+            (s_p[tx * s_width + (ty+1)] + s_p[tx * s_width + (ty-1)]) / dydy - 
+            s_RHS[rhs_idx]);
+            
+        // Write back to global memory
+        p[g_idx] = s_p[s_idx];
     }
 }
 
@@ -153,12 +278,50 @@ __global__ void UpdateBoundaryKernel(double* p, int i_max, int j_max) {
 }
 
 __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int i_max, int j_max, double dxdx, double dydy) {
+    __shared__ double s_p[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    __shared__ double s_RHS[BLOCK_SIZE * BLOCK_SIZE];
+    
+    // Global indices
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
+    
+    // Local indices for shared memory
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    int s_width = blockDim.x + 2;
+    int s_idx = tx * s_width + ty;
+    int g_idx = i * (j_max + 2) + j;
+    int rhs_idx = threadIdx.x * blockDim.x + threadIdx.y;
+    
+    // Load center values and RHS
+    if (i <= i_max+1 && j <= j_max+1) {
+        s_p[s_idx] = p[g_idx];
+        if (i <= i_max && j <= j_max && i > 0 && j > 0) {
+            s_RHS[rhs_idx] = RHS[g_idx];
+        }
+    }
+    
+    // Load halo regions
+    if (threadIdx.x == 0 && i > 1) {
+        s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
+    }
+    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+        s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
+    }
+    if (threadIdx.y == 0 && j > 1) {
+        s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
+    }
+    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+        s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
+    }
+    
+    __syncthreads();
+    
+    // Calculate residual using shared memory
     if (i <= i_max && j <= j_max && i > 0 && j > 0) {
-        res[i * (j_max + 2) + j] = (p[(i + 1) * (j_max + 2) + j] - 2.0 * p[i * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
-            (p[i * (j_max + 2) + (j + 1)] - 2.0 * p[i * (j_max + 2) + j] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j];
+        res[g_idx] = (s_p[(tx+1) * s_width + ty] - 2.0 * s_p[s_idx] + s_p[(tx-1) * s_width + ty]) / dxdx + 
+                    (s_p[tx * s_width + (ty+1)] - 2.0 * s_p[s_idx] + s_p[tx * s_width + (ty-1)]) / dydy - 
+                    s_RHS[rhs_idx];
     }
 }
 
@@ -173,5 +336,143 @@ __global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G,
     
     if (i <= i_max && j < j_max) {
         v[i * (j_max + 2) + j] = G[i * (j_max + 2) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+    }
+}
+
+__global__ void MultiStepSORKernel(double* p, double* RHS, double* res, 
+                                   int i_max, int j_max, double omega, 
+                                   double dxdx, double dydy, int iterations) {
+    __shared__ double s_p[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
+    __shared__ double s_RHS[BLOCK_SIZE * BLOCK_SIZE];
+    
+    // Global indices
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    // Local indices for shared memory
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    int s_width = blockDim.x + 2;
+    int s_idx = tx * s_width + ty;
+    int g_idx = i * (j_max + 2) + j;
+    int rhs_idx = threadIdx.x * blockDim.x + threadIdx.y;
+    
+    // Check bounds once
+    bool valid = (i <= i_max && j <= j_max && i > 0 && j > 0);
+    bool valid_halo_left = (threadIdx.x == 0 && i > 1);
+    bool valid_halo_right = (threadIdx.x == blockDim.x-1 && i < i_max);
+    bool valid_halo_bottom = (threadIdx.y == 0 && j > 1);
+    bool valid_halo_top = (threadIdx.y == blockDim.y-1 && j < j_max);
+    bool is_red = ((i + j) % 2 == 0);
+    bool is_black = ((i + j) % 2 == 1);
+    
+    // Initial load of RHS (doesn't change during iterations)
+    if (valid) {
+        s_RHS[rhs_idx] = RHS[g_idx];
+    }
+    
+    // Perform multiple iterations
+    for (int iter = 0; iter < iterations; iter++) {
+        // Load center values
+        if (i <= i_max+1 && j <= j_max+1) {
+            s_p[s_idx] = p[g_idx];
+        }
+        
+        // Load halo regions
+        if (valid_halo_left) {
+            s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
+        }
+        if (valid_halo_right) {
+            s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
+        }
+        if (valid_halo_bottom) {
+            s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
+        }
+        if (valid_halo_top) {
+            s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
+        }
+        
+        __syncthreads();
+        
+        // Update red points
+        if (valid && is_red) {
+            s_p[s_idx] = (1.0 - omega) * s_p[s_idx] + 
+                omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
+                ((s_p[(tx+1) * s_width + ty] + s_p[(tx-1) * s_width + ty]) / dxdx + 
+                (s_p[tx * s_width + (ty+1)] + s_p[tx * s_width + (ty-1)]) / dydy - 
+                s_RHS[rhs_idx]);
+                
+            // Write back to global memory
+            p[g_idx] = s_p[s_idx];
+        }
+        
+        __syncthreads();
+        
+        // Update boundary conditions between red and black updates
+        if (i >= 1 && i <= i_max) {
+            if (j == 0) p[i * (j_max + 2) + j] = p[i * (j_max + 2) + (j+1)]; // Bottom
+            if (j == j_max+1) p[i * (j_max + 2) + j] = p[i * (j_max + 2) + (j-1)]; // Top
+        }
+        if (j >= 1 && j <= j_max) {
+            if (i == 0) p[i * (j_max + 2) + j] = p[(i+1) * (j_max + 2) + j]; // Left
+            if (i == i_max+1) p[i * (j_max + 2) + j] = p[(i-1) * (j_max + 2) + j]; // Right
+        }
+        
+        __syncthreads();
+        
+        // Reload shared memory after red points and boundary updates
+        if (i <= i_max+1 && j <= j_max+1) {
+            s_p[s_idx] = p[g_idx];
+        }
+        
+        // Reload halo regions
+        if (valid_halo_left) {
+            s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
+        }
+        if (valid_halo_right) {
+            s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
+        }
+        if (valid_halo_bottom) {
+            s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
+        }
+        if (valid_halo_top) {
+            s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
+        }
+        
+        __syncthreads();
+        
+        // Update black points
+        if (valid && is_black) {
+            s_p[s_idx] = (1.0 - omega) * s_p[s_idx] + 
+                omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) *
+                ((s_p[(tx+1) * s_width + ty] + s_p[(tx-1) * s_width + ty]) / dxdx + 
+                (s_p[tx * s_width + (ty+1)] + s_p[tx * s_width + (ty-1)]) / dydy - 
+                s_RHS[rhs_idx]);
+                
+            // Write back to global memory
+            p[g_idx] = s_p[s_idx];
+        }
+        
+        __syncthreads();
+        
+        // Update boundary conditions after black update
+        if (i >= 1 && i <= i_max) {
+            if (j == 0) p[i * (j_max + 2) + j] = p[i * (j_max + 2) + (j+1)]; // Bottom
+            if (j == j_max+1) p[i * (j_max + 2) + j] = p[i * (j_max + 2) + (j-1)]; // Top
+        }
+        if (j >= 1 && j <= j_max) {
+            if (i == 0) p[i * (j_max + 2) + j] = p[(i+1) * (j_max + 2) + j]; // Left
+            if (i == i_max+1) p[i * (j_max + 2) + j] = p[(i-1) * (j_max + 2) + j]; // Right
+        }
+        
+        __syncthreads();
+    }
+    
+    // Calculate residual if needed
+    if (res != NULL && valid) {
+        double residual = (p[(i+1) * (j_max + 2) + j] - 2.0 * p[g_idx] + p[(i-1) * (j_max + 2) + j]) / dxdx + 
+                          (p[i * (j_max + 2) + (j+1)] - 2.0 * p[g_idx] + p[i * (j_max + 2) + (j-1)]) / dydy - 
+                          RHS[g_idx];
+        res[g_idx] = residual;
     }
 }
