@@ -171,7 +171,6 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             p[i][j] = unified_p[i * (j_max + 2) + j];
-            res[i][j] = unified_res[i * (j_max + 2) + j];
         }
     }
     
