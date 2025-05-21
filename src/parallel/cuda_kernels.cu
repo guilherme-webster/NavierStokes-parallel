@@ -16,6 +16,14 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 
 #define CUDACHECK(cmd) check_cuda(cmd, __FILE__, __LINE__)
 
+// Variáveis globais para arrays unificados
+double *unified_p = NULL;
+double *unified_res = NULL;
+double *unified_RHS = NULL;
+size_t cuda_array_size = 0;
+int grid_i_max = 0;
+int grid_j_max = 0;
+
 __global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1; // +1 to skip ghost cells
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1; // +1 to skip ghost cells
@@ -52,6 +60,46 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
     }
 }
 
+// Initialize CUDA arrays once
+int initCudaArrays(int i_max, int j_max) {
+    // Salvar dimensões da grade
+    grid_i_max = i_max;
+    grid_j_max = j_max;
+    
+    // Calcular tamanho necessário
+    cuda_array_size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
+    // Alocar memória unificada
+    CUDACHECK(cudaMallocManaged(&unified_p, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_res, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_RHS, cuda_array_size));
+    
+    // Inicializar com zeros
+    CUDACHECK(cudaMemset(unified_p, 0, cuda_array_size));
+    CUDACHECK(cudaMemset(unified_res, 0, cuda_array_size));
+    CUDACHECK(cudaMemset(unified_RHS, 0, cuda_array_size));
+    
+    // Prefetch para GPU
+    int device = -1;
+    CUDACHECK(cudaGetDevice(&device));
+    CUDACHECK(cudaMemPrefetchAsync(unified_p, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_RHS, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_res, cuda_array_size, device, NULL));
+    
+    return 0;
+}
+
+// Free CUDA arrays once at the end
+void freeCudaArrays() {
+    if (unified_p) CUDACHECK(cudaFree(unified_p));
+    if (unified_res) CUDACHECK(cudaFree(unified_res));
+    if (unified_RHS) CUDACHECK(cudaFree(unified_RHS));
+    
+    unified_p = NULL;
+    unified_res = NULL;
+    unified_RHS = NULL;
+}
+
 int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y, 
             double** res, double** RHS, double omega, double eps, int max_it) {
     int it = 0;
@@ -59,16 +107,7 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     double dxdx = delta_x * delta_x;
     double norm_p = L2(p, i_max, j_max);
     
-    // Tamanho total da memória necessária
-    size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    
-    // Alocar memória unificada (acessível por CPU e GPU)
-    double *unified_p, *unified_res, *unified_RHS;
-    CUDACHECK(cudaMallocManaged(&unified_p, size));
-    CUDACHECK(cudaMallocManaged(&unified_res, size));
-    CUDACHECK(cudaMallocManaged(&unified_RHS, size));
-    
-    // Inicializar arrays unificados com dados dos arrays 2D
+    // Copiar dados dos arrays 2D para os arrays unificados
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             unified_p[i * (j_max + 2) + j] = p[i][j];
@@ -81,13 +120,6 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
     dim3 blockSize(16, 16);
     dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
                  (j_max + blockSize.y - 1) / blockSize.y);
-    
-    // Prefetch data to GPU (optimização)
-    int device = -1;
-    CUDACHECK(cudaGetDevice(&device));
-    CUDACHECK(cudaMemPrefetchAsync(unified_p, size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_RHS, size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_res, size, device, NULL));
     
     // Executar iterações Red-Black SOR
     while (it < max_it) {
@@ -119,7 +151,7 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         
-        // Verificar convergência (memória já está sincronizada após cudaDeviceSynchronize)
+        // Verificar convergência
         double res_norm = 0.0;
         for (int i = 1; i <= i_max; i++) {
             for (int j = 1; j <= j_max; j++) {
@@ -142,11 +174,6 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
             res[i][j] = unified_res[i * (j_max + 2) + j];
         }
     }
-    
-    // Liberar memória unificada
-    CUDACHECK(cudaFree(unified_p));
-    CUDACHECK(cudaFree(unified_res));
-    CUDACHECK(cudaFree(unified_RHS));
     
     return (it < max_it) ? 0 : -1;
 }

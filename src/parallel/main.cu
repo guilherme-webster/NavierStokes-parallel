@@ -56,6 +56,10 @@ int main(int argc, char* argv[])
 
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
     printf("Memory allocated.\n");
+    
+    // Inicialização dos arrays CUDA
+    initCudaArrays(i_max, j_max);
+    printf("CUDA arrays initialized.\n");
 
     double t = 0;
     int i, j;
@@ -65,7 +69,9 @@ int main(int argc, char* argv[])
     clock_t start = clock();
 
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
+        if (n % n_print == 0) {
+            printf("%.5f / %.5f\n---------------------\n", t, T);
+        }
 
         double u_max = max_mat(i_max, j_max, u);
         double v_max = max_mat(i_max, j_max, v);
@@ -101,7 +107,7 @@ int main(int argc, char* argv[])
         printf("RHS calculated!\n");
 
         // Call the CUDA kernel for SOR
-        cudaSOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
+        int sor_result = cudaSOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
         printf("SOR complete!\n");
 
         for (i = 1; i <= i_max; i++ ) {
@@ -123,13 +129,15 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
-
+    
     clock_t end = clock();
-
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-
     fprintf(stderr, "%.6f", time_spent);
-
+    
+    // Liberar memória CUDA
+    freeCudaArrays();
+    
+    // Liberar memória CPU
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
     return 0;
 }
