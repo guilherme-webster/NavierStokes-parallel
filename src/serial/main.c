@@ -11,8 +11,41 @@
 
 int main(int argc, char* argv[])
 {
-    // Grid pointers and parameter declarations
-    // [unchanged code...]
+    // Grid pointers.
+	double** u;     // velocity x-component
+	double** v;     // velocity y-component
+	double** p;     // pressure
+
+    double** F;     // F term
+    double** G;     // G term
+    double** res;   // SOR residuum
+    double** RHS;   // RHS of poisson equation
+
+    // Simulation parameters.
+    int i_max, j_max;                   // number of grid points in each direction
+    double a, b;                        // sizes of the grid
+    double Re;                          // reynolds number
+    double delta_t, delta_x, delta_y;   // step sizes
+    double gamma;                       // weight for Donor-Cell-stencil
+    double T;                           // max time for integration
+    double g_x;                         // x-component of g
+    double g_y;                         // y-component of g
+    double tau;                         // security factor for adaptive step size
+    double omega;                       // relaxation parameter
+    double epsilon;                     // relative tolerance for SOR
+    int max_it;                         // maximum iterations for SOR
+    int n_print;                        // output to file every ..th step
+    int problem;                        // problem type
+    double f;                           // frequency of periodic boundary conditions (if problem == 2)
+    int i,j;                   // loop variables
+
+    // default parameter file
+    const char* param_file = "parameters.txt";
+
+    // If a parameter file is provided as command line argument, use it
+    if (argc > 1) {
+        param_file = argv[1];
+    }
 
     // Initialize all parameters.
     init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);

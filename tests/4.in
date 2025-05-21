@@ -4,8 +4,8 @@
 512         # j_max
 1.0	        # Side a length
 1.0	        # Side b length
-1.0 	    # Time to integrate
-50000.0 	# Reynolds number (higher reynolds number)
+0.05	    # Time to integrate
+10000.0 	# Reynolds number
 0.0 	    # x-component of g
 0.0 	    # y-component of g
 1.0		    # Security factor tau.

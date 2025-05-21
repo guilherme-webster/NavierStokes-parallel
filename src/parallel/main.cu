@@ -102,7 +102,7 @@ int main(int argc, char* argv[])
     int max_it;                         
     int n_print;                        
     int problem;                        
-    double f;                           
+    double f;                     
 
     const char* param_file = "parameters.txt"; 
 
@@ -130,47 +130,32 @@ int main(int argc, char* argv[])
     double *d_u, *d_v, *d_p, *d_F, *d_G, *d_RHS, *d_res;
     double *d_u_max, *d_v_max; // For max value calculation on GPU
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    
-    CUDACHECK(cudaMalloc((void**)&d_u, size));
-    CUDACHECK(cudaMalloc((void**)&d_v, size));
-    CUDACHECK(cudaMalloc((void**)&d_p, size));
-    CUDACHECK(cudaMalloc((void**)&d_F, size));
-    CUDACHECK(cudaMalloc((void**)&d_G, size));
-    CUDACHECK(cudaMalloc((void**)&d_RHS, size));
-    CUDACHECK(cudaMalloc((void**)&d_res, size));
-    CUDACHECK(cudaMalloc((void**)&d_u_max, sizeof(double)));
-    CUDACHECK(cudaMalloc((void**)&d_v_max, sizeof(double)));
-    
-    // Flattened host array for initial/final transfers only
-    double *h_flat = (double*)malloc(size);
-    
-    // Initialize device memory with initial conditions (just once)
+
+    // Allocate memory
+    CUDACHECK(cudaMallocManaged((void**)&d_u, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_v, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_p, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_F, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_G, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_RHS, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_res, size));
+    CUDACHECK(cudaMallocManaged((void**)&d_u_max, sizeof(double)));
+    CUDACHECK(cudaMallocManaged((void**)&d_v_max, sizeof(double)));
+
+    // Initialize
     for (int i = 0; i <= i_max+1; i++) {
         for (int j = 0; j <= j_max+1; j++) {
-            h_flat[i * (j_max + 2) + j] = u[i][j];
+            d_u[i * (j_max + 2) + j] = u[i][j];
+            d_v[i * (j_max + 2) + j] = v[i][j];
+            d_p[i * (j_max + 2) + j] = p[i][j];
         }
     }
-    CUDACHECK(cudaMemcpy(d_u, h_flat, size, cudaMemcpyHostToDevice));
-    
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            h_flat[i * (j_max + 2) + j] = v[i][j];
-        }
-    }
-    CUDACHECK(cudaMemcpy(d_v, h_flat, size, cudaMemcpyHostToDevice));
-    
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            h_flat[i * (j_max + 2) + j] = p[i][j];
-        }
-    }
-    CUDACHECK(cudaMemcpy(d_p, h_flat, size, cudaMemcpyHostToDevice));
-    
-    // Initialize other arrays with zeros
-    CUDACHECK(cudaMemset(d_F, 0, size));
-    CUDACHECK(cudaMemset(d_G, 0, size));
-    CUDACHECK(cudaMemset(d_RHS, 0, size));
-    CUDACHECK(cudaMemset(d_res, 0, size));
+
+    // Zero out other arrays
+    memset(d_F, 0, size);
+    memset(d_G, 0, size);
+    memset(d_RHS, 0, size);
+    memset(d_res, 0, size);
 
     // Grid and block dimensions
     dim3 blockSize(16, 16);
@@ -187,36 +172,35 @@ int main(int argc, char* argv[])
     
     // Main simulation loop - ALL COMPUTATION STAYS ON GPU
     for (int timestep = 0; timestep < MAX_TIMESTEPS; timestep++) {
-        // Reset max values
-        double h_u_max = 0.0, h_v_max = 0.0;
-        CUDACHECK(cudaMemcpy(d_u_max, &h_u_max, sizeof(double), cudaMemcpyHostToDevice));
-        CUDACHECK(cudaMemcpy(d_v_max, &h_v_max, sizeof(double), cudaMemcpyHostToDevice));
+        // Reset max values - direct access to managed memory
+        *d_u_max = 0.0;
+        *d_v_max = 0.0;
         
         // Find max values on GPU
         dim3 reduceBlock(16, 16);
         findMaxKernel<<<gridSize, reduceBlock>>>(d_u, d_u_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());  // Ensure max values are computed
+        
         findMaxKernel<<<gridSize, reduceBlock>>>(d_v, d_v_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());  // Ensure max values are computed
 
-        // Get max values back to host (small transfer - just 2 doubles)
-        CUDACHECK(cudaMemcpy(&h_u_max, d_u_max, sizeof(double), cudaMemcpyDeviceToHost));
-        CUDACHECK(cudaMemcpy(&h_v_max, d_v_max, sizeof(double), cudaMemcpyDeviceToHost));
-        
-        // Calculate timestep on host
-        delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
-                             delta_x / fabs(h_u_max), delta_y / fabs(h_v_max));
-        gamma = fmax(h_u_max * delta_t / delta_x, h_v_max * delta_t / delta_y);
+        // Access max values directly from managed memory - no copies needed
+        double delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
+                            delta_x / fabs(*d_u_max), delta_y / fabs(*d_v_max));
+        gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
 
         // Set boundary conditions directly on GPU
         setBoundaryConditionsKernel<<<boundaryGridSize, blockSize>>>(
             d_u, d_v, i_max, j_max, problem, 1.0, t, f);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
 
         // Print progress occasionally
         if (timestep % 100 == 0) {
-            printf("Step %d of %d (%.1f%%)\n", timestep, MAX_TIMESTEPS, 
-                   (float)timestep/MAX_TIMESTEPS*100.0);
+            printf("Step %d of %d (%.1f%%), u_max=%.6f, v_max=%.6f\n", timestep, MAX_TIMESTEPS, 
+                (float)timestep/MAX_TIMESTEPS*100.0, *d_u_max, *d_v_max);
         }
 
         // Calculate F and G directly on device
@@ -224,11 +208,13 @@ int main(int argc, char* argv[])
             d_u, d_v, NULL, d_F, d_G, NULL, NULL,
             i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma, 0.0, 0.0, 0);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
 
         // Calculate RHS directly on device
         CalculateRHSKernel<<<gridSize, blockSize>>>(
             d_F, d_G, d_RHS, i_max, j_max, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
 
         // SOR for pressure directly on device
         double dxdx = delta_x * delta_x;
@@ -240,25 +226,29 @@ int main(int argc, char* argv[])
             // Update boundary conditions for pressure
             UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
             CUDACHECK(cudaGetLastError());
+            CUDACHECK(cudaDeviceSynchronize());
             
             // Red-black SOR iterations
             RedSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
             CUDACHECK(cudaGetLastError());
+            CUDACHECK(cudaDeviceSynchronize());
+            
             BlackSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy);
             CUDACHECK(cudaGetLastError());
+            CUDACHECK(cudaDeviceSynchronize());
             
             // Check convergence occasionally
             if (it % 10 == 0) {
                 CalculateResidualKernel<<<gridSize, blockSize>>>(
                     d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
                 CUDACHECK(cudaGetLastError());
+                CUDACHECK(cudaDeviceSynchronize());
                 
-                // Compute residual norm - implement on gpu with reduction
-                CUDACHECK(cudaMemcpy(h_flat, d_res, size, cudaMemcpyDeviceToHost));
+                // Compute residual norm directly with managed memory
                 residual = 0.0;
                 for (int i = 1; i <= i_max; i++) {
                     for (int j = 1; j <= j_max; j++) {
-                        residual += h_flat[i * (j_max + 2) + j] * h_flat[i * (j_max + 2) + j];
+                        residual += d_res[i * (j_max + 2) + j] * d_res[i * (j_max + 2) + j];
                     }
                 }
                 residual = sqrt(residual / (i_max * j_max));
@@ -269,44 +259,34 @@ int main(int argc, char* argv[])
         // Update velocities directly on device
         UpdateVelocityKernel<<<gridSize, blockSize>>>(
             d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
 
         // Update time
         t += delta_t;
-    }
-    
-    // ONLY NOW: Copy results back to host for final output    
-    CUDACHECK(cudaMemcpy(h_flat, d_u, size, cudaMemcpyDeviceToHost));
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            u[i][j] = h_flat[i * (j_max + 2) + j];
-        }
-    }
-    
-    CUDACHECK(cudaMemcpy(h_flat, d_v, size, cudaMemcpyDeviceToHost));
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            v[i][j] = h_flat[i * (j_max + 2) + j];
-        }
-    }
-    
-    CUDACHECK(cudaMemcpy(h_flat, d_p, size, cudaMemcpyDeviceToHost));
-    for (int i = 0; i <= i_max+1; i++) {
-        for (int j = 0; j <= j_max+1; j++) {
-            p[i][j] = h_flat[i * (j_max + 2) + j];
-        }
     }
 
     // Stop timer
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    // Final results
+    // Update the host arrays with results from device for final output
+    // This is only needed if you use the host arrays for writing results or other purposes
+    for (int i = 0; i <= i_max+1; i++) {
+        for (int j = 0; j <= j_max+1; j++) {
+            u[i][j] = d_u[i * (j_max + 2) + j];
+            v[i][j] = d_v[i * (j_max + 2) + j];
+            p[i][j] = d_p[i * (j_max + 2) + j];
+        }
+    }
+
+    // Final results - can directly access center values from managed memory
     printf("\n==================== FINAL RESULTS ====================\n");
     printf("Simulation completed: %d steps in %.6f seconds\n", MAX_TIMESTEPS, time_spent);
     printf("Final time reached: %.6f\n", t);
-    printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-    printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-    printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
+    printf("U-CENTER: %.6f\n", d_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("V-CENTER: %.6f\n", d_v[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("P-CENTER: %.6f\n", d_p[(i_max/2) * (j_max + 2) + (j_max/2)]);
     printf("Average time per step: %.6f seconds\n", time_spent/MAX_TIMESTEPS);
     printf("=========================================================\n");
 
@@ -320,8 +300,8 @@ int main(int argc, char* argv[])
     CUDACHECK(cudaFree(d_res));
     CUDACHECK(cudaFree(d_u_max));
     CUDACHECK(cudaFree(d_v_max));
-    free(h_flat);
+
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
-    
+
     return 0;
 }
