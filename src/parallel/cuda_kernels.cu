@@ -73,9 +73,6 @@ double *device_G = NULL;
 double *device_dpdx = NULL;
 double *device_dpdy = NULL;
 
-// Arrays temporários na host memory (CPU) para transferências
-double *host_temp = NULL;
-
 double u_max = 0.0;
 double v_max = 0.0;
 double delta_t, delta_x, delta_y, gamma_factor;  // Alterado de gamma para gamma_factor
@@ -143,14 +140,8 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     size_t free_mem = 0, total_mem = 0;
     CUDACHECK(cudaMemGetInfo(&free_mem, &total_mem));
     
-    size_t total_needed = 9 * cuda_array_size + cuda_array_size; // 9 arrays GPU + 1 array temporário CPU
+    size_t total_needed = 9 * cuda_array_size; // 9 arrays GPU
     if (total_needed > free_mem) {
-        return -1;
-    }
-    
-    // Alocar memória temporária na CPU para transferências
-    host_temp = (double*)malloc(cuda_array_size);
-    if (host_temp == NULL) {
         return -1;
     }
     
@@ -159,16 +150,12 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     
     err = cudaMalloc(&device_p, cuda_array_size);
     if (err != cudaSuccess) {
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     err = cudaMalloc(&device_res, cuda_array_size);
     if (err != cudaSuccess) {
         if (device_p) cudaFree(device_p);
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
@@ -176,8 +163,6 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     if (err != cudaSuccess) {
         if (device_p) cudaFree(device_p);
         if (device_res) cudaFree(device_res);
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
@@ -186,8 +171,6 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
         if (device_p) cudaFree(device_p);
         if (device_res) cudaFree(device_res);
         if (device_RHS) cudaFree(device_RHS);
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
@@ -197,40 +180,30 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
         if (device_res) cudaFree(device_res);
         if (device_RHS) cudaFree(device_RHS);
         if (device_u) cudaFree(device_u);
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     err = cudaMalloc(&device_F, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     err = cudaMalloc(&device_G, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     err = cudaMalloc(&device_dpdx, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     err = cudaMalloc(&device_dpdy, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
@@ -245,109 +218,111 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
         !CHECK_POINTER(device_dpdx, cuda_array_size, "device_dpdx") ||
         !CHECK_POINTER(device_dpdy, cuda_array_size, "device_dpdy")) {
         freeCudaArrays();
-        free(host_temp);
-        host_temp = NULL;
         return -1;
     }
     
     // Inicializar os arrays com dados da CPU e transferir para a GPU
-    // Primeiro, preparar os dados linearizados
-    for (int i = 0; i <= i_max + 1; i++) {
-        for (int j = 0; j <= j_max + 1; j++) {
-            // Verificar se os ponteiros p[i], res[i], etc são válidos
-            if (p[i] == NULL || res[i] == NULL || RHS[i] == NULL) {
-                freeCudaArrays();
-                free(host_temp);
-                host_temp = NULL;
-                return -1;
-            }
-            
-            // Verificação especial para u que tem dimensão i_max+1
-            if (i <= i_max && u[i] == NULL) {
-                freeCudaArrays();
-                free(host_temp);
-                host_temp = NULL;
-                return -1;
-            }
-            
-            // Verificação especial para v que tem dimensão j_max+1
-            if (v[i] == NULL) {
-                freeCudaArrays();
-                free(host_temp);
-                host_temp = NULL;
-                return -1;
-            }
-            
-            // Verificar se o índice linearizado está dentro dos limites
-            size_t idx = i * (j_max + 2) + j;
-            if (idx >= (i_max + 2) * (j_max + 2)) {
-                freeCudaArrays();
-                free(host_temp);
-                host_temp = NULL;
-                return -1;
-            }
-            
-            try {
-                // Preencher arrays temporários para transferência
-                host_temp[idx] = p[i][j];
-            } catch (...) {
-                freeCudaArrays();
-                free(host_temp);
-                host_temp = NULL;
-                return -1;
-            }
-        }
+    double *temp_host_buffer = (double*)malloc(cuda_array_size);
+    if (temp_host_buffer == NULL) {
+        freeCudaArrays();
+        return -1;
     }
     
     // Transferir array p para GPU
-    CUDACHECK(cudaMemcpy(device_p, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
-    
-    // Preencher e transferir array res
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
+            if (p[i] == NULL) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
             size_t idx = i * (j_max + 2) + j;
-            host_temp[idx] = res[i][j];
+            if (idx >= (i_max + 2) * (j_max + 2)) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
+            temp_host_buffer[idx] = p[i][j];
         }
     }
-    CUDACHECK(cudaMemcpy(device_res, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_p, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
     
-    // Preencher e transferir array RHS
+    // Transferir array res para GPU
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
+            if (res[i] == NULL) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
             size_t idx = i * (j_max + 2) + j;
-            host_temp[idx] = RHS[i][j];
+            temp_host_buffer[idx] = res[i][j];
         }
     }
-    CUDACHECK(cudaMemcpy(device_RHS, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_res, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
     
-    // Preencher e transferir array u (com verificações especiais)
-    memset(host_temp, 0, cuda_array_size);
+    // Transferir array RHS para GPU
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            if (RHS[i] == NULL) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
+            size_t idx = i * (j_max + 2) + j;
+            temp_host_buffer[idx] = RHS[i][j];
+        }
+    }
+    CUDACHECK(cudaMemcpy(device_RHS, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Transferir array u para GPU (com verificações especiais)
+    memset(temp_host_buffer, 0, cuda_array_size);
     for (int i = 0; i <= i_max; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
+            if (u[i] == NULL) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
             size_t idx = i * (j_max + 2) + j;
-            host_temp[idx] = u[i][j];
+            temp_host_buffer[idx] = u[i][j];
         }
     }
-    CUDACHECK(cudaMemcpy(device_u, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_u, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
     
-    // Preencher e transferir array v (com verificações especiais)
-    memset(host_temp, 0, cuda_array_size);
+    // Transferir array v para GPU (com verificações especiais)
+    memset(temp_host_buffer, 0, cuda_array_size);
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max; j++) {
+            if (v[i] == NULL) {
+                free(temp_host_buffer);
+                freeCudaArrays();
+                return -1;
+            }
+            
             size_t idx = i * (j_max + 2) + j;
-            host_temp[idx] = v[i][j];
+            temp_host_buffer[idx] = v[i][j];
         }
     }
-    CUDACHECK(cudaMemcpy(device_v, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_v, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
     
     // Inicializar F, G, dpdx e dpdy com zeros
-    memset(host_temp, 0, cuda_array_size);
-    CUDACHECK(cudaMemcpy(device_F, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
-    CUDACHECK(cudaMemcpy(device_G, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
-    CUDACHECK(cudaMemcpy(device_dpdx, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
-    CUDACHECK(cudaMemcpy(device_dpdy, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    memset(temp_host_buffer, 0, cuda_array_size);
+    CUDACHECK(cudaMemcpy(device_F, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_G, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_dpdx, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_dpdy, temp_host_buffer, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Liberar o buffer temporário
+    free(temp_host_buffer);
     
     return 0;
+}
 }
 
 // Free CUDA arrays once at the end
@@ -397,11 +372,7 @@ void freeCudaArrays() {
         device_dpdy = NULL;
     }
     
-    if (host_temp) {
-        free(host_temp);
-        host_temp = NULL;
-    }
-    
+    // Duplicate free calls - removing these
     if (device_F) {
         CUDACHECK(cudaFree(device_F));
         device_F = NULL;
@@ -431,32 +402,51 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     double dxdx = delta_x * delta_x;
     double norm_p = 0.0;
     
-    // Calcular norma inicial de pressão
-    // Primeiro, transferir dados do device para o host
-    CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
+    // Allocate device memory for reduction and temporary values
+    double *d_norm_p, *d_res_norm;
+    double *d_center_values, h_center_values[3]; // For u, v, p values at center
     
-    for (int i = 1; i <= i_max; i++) {
-        for(int j = 1; j <= j_max; j++) {
-            norm_p += host_temp[i * (j_max + 2) + j] * host_temp[i * (j_max + 2) + j];
-        }
+    CUDACHECK(cudaMalloc(&d_norm_p, sizeof(double)));
+    CUDACHECK(cudaMalloc(&d_res_norm, sizeof(double)));
+    CUDACHECK(cudaMalloc(&d_center_values, 3 * sizeof(double)));
+    
+    if (!CHECK_POINTER(d_norm_p, sizeof(double), "d_norm_p") || 
+        !CHECK_POINTER(d_res_norm, sizeof(double), "d_res_norm") ||
+        !CHECK_POINTER(d_center_values, 3 * sizeof(double), "d_center_values")) {
+        return -1;
     }
-    norm_p = sqrt(norm_p / i_max / j_max);
     
-    // 1. Calcular u_max e v_max usando kernel max_mat_kernel
+    // Calculate initial pressure norm using GPU
+    CUDACHECK(cudaMemset(d_norm_p, 0, sizeof(double)));
+    int num_threads = 256;
+    int num_blocks = (i_max + num_threads - 1) / num_threads;
+    calculate_pressure_norm_kernel<<<num_blocks, num_threads, num_threads * sizeof(double)>>>(
+        device_p, d_norm_p, i_max, j_max);
+    KERNEL_CHECK("calculate_pressure_norm_kernel");
+    
+    // Get result back to CPU
+    double h_norm_p;
+    CUDACHECK(cudaMemcpy(&h_norm_p, d_norm_p, sizeof(double), cudaMemcpyDeviceToHost));
+    norm_p = sqrt(h_norm_p / (i_max * j_max));
+    
+    // 1. Calculate u_max and v_max using kernel max_mat_kernel
     double *d_umax, *d_vmax, h_umax = 0.0, h_vmax = 0.0;
     CUDACHECK(cudaMalloc(&d_umax, sizeof(double)));
     CUDACHECK(cudaMalloc(&d_vmax, sizeof(double)));
     
     if (!CHECK_POINTER(d_umax, sizeof(double), "d_umax") || 
         !CHECK_POINTER(d_vmax, sizeof(double), "d_vmax")) {
+        CUDACHECK(cudaFree(d_norm_p));
+        CUDACHECK(cudaFree(d_res_norm));
+        CUDACHECK(cudaFree(d_center_values));
         return -1;
     }
     
-    // Inicializar com zero
+    // Initialize with zero
     CUDACHECK(cudaMemset(d_umax, 0, sizeof(double)));
     CUDACHECK(cudaMemset(d_vmax, 0, sizeof(double)));
     
-    int max_blocks = 32; // Ajuste conforme o tamanho do domínio
+    int max_blocks = 32; // Adjust according to the domain size
     int max_threads = 256;
     
     max_mat_kernel_double<<<max_blocks, max_threads>>>(device_u, i_max, j_max, d_umax);
@@ -465,7 +455,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     max_mat_kernel_double<<<max_blocks, max_threads>>>(device_v, i_max, j_max, d_vmax);
     KERNEL_CHECK("max_mat_kernel_double (v)");
     
-    // Copiar resultados de volta para o host
+    // Copy results back to host
     CUDACHECK(cudaMemcpy(&h_umax, d_umax, sizeof(double), cudaMemcpyDeviceToHost));
     CUDACHECK(cudaMemcpy(&h_vmax, d_vmax, sizeof(double), cudaMemcpyDeviceToHost));
     
@@ -475,7 +465,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     CUDACHECK(cudaFree(d_umax));
     CUDACHECK(cudaFree(d_vmax));
     
-    // Calcular delta_t e gamma_factor
+    // Calculate delta_t and gamma_factor
     delta_t = tau * n_min(4, 3.0, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
     gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
@@ -497,6 +487,9 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, TOP, sin(f*(*t)), 0.0);           
     }
     else {
+        CUDACHECK(cudaFree(d_norm_p));
+        CUDACHECK(cudaFree(d_res_norm));
+        CUDACHECK(cudaFree(d_center_values));
         return -1;
     }
     CUDACHECK(cudaDeviceSynchronize());
@@ -518,88 +511,84 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     dim3 blockSOR(16, 16);
     dim3 gridSOR((i_max+blockSOR.x-1)/blockSOR.x, (j_max+blockSOR.y-1)/blockSOR.y);
     while (it < max_it) {
-        // Atualizar condições de contorno de pressão (ghost cells) na GPU
-        // Primeiro, transferir array p do device para o host
-        CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
-        
-        // Atualizar bordas no host
-        for (int i = 1; i <= i_max; i++) {
-            host_temp[i * (j_max + 2) + 0] = host_temp[i * (j_max + 2) + 1];
-            host_temp[i * (j_max + 2) + (j_max + 1)] = host_temp[i * (j_max + 2) + j_max];
-        }
-        for (int j = 1; j <= j_max; j++) {
-            host_temp[0 * (j_max + 2) + j] = host_temp[1 * (j_max + 2) + j];
-            host_temp[(i_max + 1) * (j_max + 2) + j] = host_temp[i_max * (j_max + 2) + j];
-        }
-        
-        // Copiar de volta para o device
-        CUDACHECK(cudaMemcpy(device_p, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+        // Update pressure boundary conditions (ghost cells) on GPU
+        update_pressure_bounds_kernel<<<block1D_i, threads1D>>>(device_p, i_max, j_max);
+        CUDACHECK(cudaDeviceSynchronize());
         
         // Red points
         RedSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
+        
         // Black points
         BlackSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
-        // Calcular resíduos
+        
+        // Calculate residuals
         CalculateResidualKernel<<<gridSOR, blockSOR>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
-        // Verificar convergência (CPU reduction)
-        double res_norm = 0.0;
         
-        // Transferir array res do device para o host
-        CUDACHECK(cudaMemcpy(host_temp, device_res, cuda_array_size, cudaMemcpyDeviceToHost));
+        // Check convergence using GPU reduction
+        CUDACHECK(cudaMemset(d_res_norm, 0, sizeof(double)));
+        calculate_residual_norm_kernel<<<num_blocks, num_threads, num_threads * sizeof(double)>>>(
+            device_res, d_res_norm, i_max, j_max);
+        KERNEL_CHECK("calculate_residual_norm_kernel");
         
-        for (int i = 1; i <= i_max; i++) {
-            for (int j = 1; j <= j_max; j++) {
-                res_norm += host_temp[i * (j_max + 2) + j] * host_temp[i * (j_max + 2) + j];
-            }
-        }
-        res_norm = sqrt(res_norm / (i_max * j_max));
+        // Get result back to CPU
+        double h_res_norm;
+        CUDACHECK(cudaMemcpy(&h_res_norm, d_res_norm, sizeof(double), cudaMemcpyDeviceToHost));
+        double res_norm = sqrt(h_res_norm / (i_max * j_max));
+        
         if (res_norm <= eps * (norm_p + 0.01)) {
-            break; // Convergência atingida
+            break; // Convergence achieved
         }
         it++;
     }
     printf("SOR complete!\n");
-    // 4. Atualizar u e v usando kernel update_uv_kernel
+    
+    // 4. Update u and v using update_uv_kernel
     update_uv_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK("update_uv_kernel");
     CUDACHECK(cudaDeviceSynchronize());
     
-    // Não há mais cudaMalloc/cudaFree aqui!
-    // Corrigir acesso incorreto para os valores centrais
+    // Calculate center index
     int center_i = i_max/2;
     int center_j = j_max/2;
     
-    // Verificar limites antes de acessar valores centrais
+    // Check limits before accessing central values
     if (center_i < 0 || center_i > i_max+1 || center_j < 0 || center_j > j_max+1) {
+        CUDACHECK(cudaFree(d_norm_p));
+        CUDACHECK(cudaFree(d_res_norm));
+        CUDACHECK(cudaFree(d_center_values));
         return -1;
     }
     
     int center_idx = center_i * (j_max + 2) + center_j;
     
-    // Transferir dados de u, v, p do device para o host para gerar saída
-    CUDACHECK(cudaMemcpy(host_temp, device_u, cuda_array_size, cudaMemcpyDeviceToHost));
-    double u_center = host_temp[center_idx];
+    // Extract central values directly on GPU
+    extract_value_kernel<<<1, 1>>>(device_u, center_idx, &d_center_values[0]);
+    extract_value_kernel<<<1, 1>>>(device_v, center_idx, &d_center_values[1]);
+    extract_value_kernel<<<1, 1>>>(device_p, center_idx, &d_center_values[2]);
+    CUDACHECK(cudaDeviceSynchronize());
     
-    CUDACHECK(cudaMemcpy(host_temp, device_v, cuda_array_size, cudaMemcpyDeviceToHost));
-    double v_center = host_temp[center_idx];
-    
-    CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
-    double p_center = host_temp[center_idx];
+    // Copy results back to host
+    CUDACHECK(cudaMemcpy(h_center_values, d_center_values, 3 * sizeof(double), cudaMemcpyDeviceToHost));
     
     // Output central values for debugging
     printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
-    printf("U-CENTER: %.6f\n", u_center);
-    printf("V-CENTER: %.6f\n", v_center);
-    printf("P-CENTER: %.6f\n", p_center);
+    printf("U-CENTER: %.6f\n", h_center_values[0]);
+    printf("V-CENTER: %.6f\n", h_center_values[1]);
+    printf("P-CENTER: %.6f\n", h_center_values[2]);
     
-    (*n_out)++;  // Incrementa o valor apontado pelo ponteiro
-    *t += delta_t;  // Atualiza o tempo
+    // Free temporary device memory
+    CUDACHECK(cudaFree(d_norm_p));
+    CUDACHECK(cudaFree(d_res_norm));
+    CUDACHECK(cudaFree(d_center_values));
+    
+    (*n_out)++;  // Increment the value pointed to by the pointer
+    *t += delta_t;  // Update time
 
     return (it < max_it) ? 0 : -1;
 }
@@ -772,22 +761,123 @@ __global__ void update_uv_kernel(double* u, double* v, double* F, double* G, dou
     }
 }
 
-// Função utilitária para mínimo de até 4 valores double
-__host__ __device__ double n_min(int n, double a, double b, double c, double d) {
-    double minval = a;
-    if (b < minval) minval = b;
-    if (c < minval) minval = c;
-    if (d < minval) minval = d;
-    return minval;
+// Kernel para atualizar bordas/ghost cells de pressão
+__global__ void update_pressure_bounds_kernel(double* p, int i_max, int j_max) {
+    // Thread index
+    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    
+    // Atualiza bordas em i
+    if (idx <= i_max) {
+        // Bottom boundary
+        p[idx * (j_max + 2) + 0] = p[idx * (j_max + 2) + 1];
+        // Top boundary
+        p[idx * (j_max + 2) + (j_max + 1)] = p[idx * (j_max + 2) + j_max];
+    }
+    
+    // Atualiza bordas em j
+    if (idx <= j_max) {
+        // Left boundary
+        p[0 * (j_max + 2) + idx] = p[1 * (j_max + 2) + idx];
+        // Right boundary
+        p[(i_max + 1) * (j_max + 2) + idx] = p[i_max * (j_max + 2) + idx];
+    }
 }
 
-// Exemplo de chamada de kernel para max_mat:
-// double* d_max;
-// cudaMallocManaged(&d_max, sizeof(double));
-// *d_max = 0.0;
-// max_mat_kernel<<<numBlocks, blockSize>>>(device_u, i_max, j_max, d_max);
-// cudaDeviceSynchronize();
-// double max_val = *d_max;
-// cudaFree(d_max);
-//
-// Para os outros kernels, use grid/block adequados conforme o tamanho do domínio.
+// Kernel para redução de soma (para calcular norma)
+__global__ void reduce_sum_kernel(double* input, double* output, int size) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Carregar dados da memória global para compartilhada
+    sdata[tid] = (i < size) ? input[i] : 0;
+    __syncthreads();
+    
+    // Realizar redução na memória compartilhada
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado para a saída
+    if (tid == 0) {
+        output[blockIdx.x] = sdata[0];
+    }
+}
+
+// Kernel para extrair valor de um ponto específico
+__global__ void extract_value_kernel(double* array, int idx, double* result) {
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        *result = array[idx];
+    }
+}
+
+// Kernel para calcular norma de resíduo
+__global__ void calculate_residual_norm_kernel(double* res, double* norm, int i_max, int j_max) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    
+    double sum = 0.0;
+    
+    // Cada thread soma vários elementos
+    if (i <= i_max) {
+        for (int j = 1; j <= j_max; j++) {
+            double val = res[i * (j_max + 2) + j];
+            sum += val * val;
+        }
+    }
+    
+    // Carregar na memória compartilhada
+    sdata[tid] = sum;
+    __syncthreads();
+    
+    // Redução dentro do bloco
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado parcial
+    if (tid == 0) {
+        atomicAdd(norm, sdata[0]);
+    }
+}
+
+// Kernel para calcular a norma de pressão inicial
+__global__ void calculate_pressure_norm_kernel(double* p, double* norm, int i_max, int j_max) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    
+    double sum = 0.0;
+    
+    // Cada thread soma vários elementos
+    if (i <= i_max) {
+        for (int j = 1; j <= j_max; j++) {
+            double val = p[i * (j_max + 2) + j];
+            sum += val * val;
+        }
+    }
+    
+    // Carregar na memória compartilhada
+    sdata[tid] = sum;
+    __syncthreads();
+    
+    // Redução dentro do bloco
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado parcial
+    if (tid == 0) {
+        atomicAdd(norm, sdata[0]);
+    }
+}
