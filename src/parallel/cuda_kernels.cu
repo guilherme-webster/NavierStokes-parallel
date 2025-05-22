@@ -323,7 +323,7 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     
     return 0;
 }
-}
+
 
 // Free CUDA arrays once at the end
 void freeCudaArrays() {
