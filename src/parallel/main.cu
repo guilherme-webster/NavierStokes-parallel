@@ -306,7 +306,12 @@ int main(int argc, char* argv[])
                 (float)timestep/MAX_TIMESTEPS*100.0, u_max_val_cpu, v_max_val_cpu);
         }
 
+        // Calculate gamma for Donor-Cell scheme - used in both F and G calculations
+        // This matches the serial implementation's calculation of gamma
+        double gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
+        
         // Calculate F and G directly on device using separate kernels
+        // TODO: Pass gamma to kernels using a kernel parameter or constant memory
         CalculateFKernel<<<gridSize, blockSize>>>(
             d_u, d_v, d_F, i_max, j_max, Re, g_x, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
