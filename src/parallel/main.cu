@@ -1,10 +1,6 @@
 #include "memory.h"
 #include "io.h"
-#include "integration.h"
-#include "boundaries.h"
 #include "cuda_kernels.h"
-#include "utils.h"
-
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
@@ -74,7 +70,7 @@ int main(int argc, char* argv[])
         }
         
         int sor_result = cudaSOR(p, u, v, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, F, G, tau,
-                                 Re, problem, f, &t, &n_out);
+                                 Re, problem, f, &t, &n_out, g_x, g_y);
         
         // t já é atualizado dentro de cudaSOR
         n++;

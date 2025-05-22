@@ -1,8 +1,8 @@
 #include "cuda_kernels.h"
 #include <cuda_runtime.h>
-#include "integration.h"
 #include <stdio.h>
 #include <math.h>
+#include <stdarg.h>
 
 // Add CUDA error checking
 void check_cuda(cudaError_t error, const char *filename, const int line)
@@ -24,7 +24,7 @@ double *unified_u = NULL;
 double *unified_v = NULL;
 double u_max = 0.0;
 double v_max = 0.0;
-double delta_t, delta_x, delta_y, gamma;
+double delta_t, delta_x, delta_y, gamma_factor;  // Alterado de gamma para gamma_factor
 size_t cuda_array_size = 0;
 int grid_i_max = 0;
 int grid_j_max = 0;
@@ -113,7 +113,7 @@ void freeCudaArrays() {
 
 int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta_x, double delta_y, 
             double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
-            int problem, double f, double* t, int* n_out) {
+            int problem, double f, double* t, int* n_out, double g_x, double g_y) {
     int it = 0;
     double dydy = delta_y * delta_y;
     double dxdx = delta_x * delta_x;
@@ -123,7 +123,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     u_max = max_mat(i_max, j_max, unified_u);
     v_max = max_mat(i_max, j_max, unified_v);
     delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), delta_x / fabs(u_max), delta_y / fabs(v_max));
-    gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
+    gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
     if (problem == 1){
         set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
@@ -135,7 +135,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
         set_noslip_linear(i_max, j_max, unified_u, unified_v, RIGHT);
         set_noslip_linear(i_max, j_max, unified_u, unified_v, BOTTOM);
-        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, sin(f*t), 0.0);           
+        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, sin(f*(*t)), 0.0);           
     }
     else {
         printf("Unknown problem type (see parameters.txt).\n");
@@ -144,7 +144,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
 
     printf("Conditions set!\n");
 
-    FG(F, G, unified_u, unified_v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
+    FG_linear(F, G, unified_u, unified_v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
     
     printf("F, G calculated!\n");
     for (int i = 1; i <= i_max; i++ ) {
@@ -225,11 +225,11 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         for (int j = 1; j <= j_max; j++) {
             if (i <= i_max - 1) {
                 // Acesso correto ao array 1D linearizado
-                unified_u[i * (j_max + 2) + j] = F[i][j] - delta_t * dp_dx(unified_p, i, j, delta_x);
+                unified_u[i * (j_max + 2) + j] = F[i][j] - delta_t * dp_dx(unified_p, i, j,j_max, delta_x);
             }
             if (j <= j_max - 1) {
                 // Acesso correto ao array 1D linearizado
-                unified_v[i * (j_max + 2) + j] = G[i][j] - delta_t * dp_dy(unified_p, i, j, delta_y);
+                unified_v[i * (j_max + 2) + j] = G[i][j] - delta_t * dp_dy(unified_p, i, j, j_max, delta_y);
             }
         }
     }
@@ -246,74 +246,44 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
 }
 
 
-double max_mat(double* mat, int i_max, int j_max) {
+double max_mat(int i_max, int j_max, double* mat) {
     double max_val = 0.0;
     for (int i = 1; i <= i_max; i++) {
         for (int j = 1; j <= j_max; j++) {
-            if (mat[i * (j_max + 2) + j] > max_val) {
-                max_val = mat[i * (j_max + 2) + j];
+            if (fabs(mat[i * (j_max + 2) + j]) > max_val) {
+                max_val = fabs(mat[i * (j_max + 2) + j]);
             }
         }
     }
     return max_val;
 }
 
-double n_min (int count, double* vals) {
-    double min_val = vals[0];
+double n_min (int count, ...) {
+    va_list args;
+    va_start(args, count);
+    
+    double min_val = va_arg(args, double);
+    
     for (int i = 1; i < count; i++) {
-        if (vals[i] < min_val) {
-            min_val = vals[i];
+        double val = va_arg(args, double);
+        if (val < min_val) {
+            min_val = val;
         }
     }
+    
+    va_end(args);
     return min_val;
 }
-double dp_dx(double* p, int i, int j, double delta_x) {
-    return (p[(i + 1) * (grid_j_max + 2) + j] - p[i * (grid_j_max + 2) + j]) / delta_x;
-}
-double dp_dy(double* p, int i, int j, double delta_y) {
-    return (p[i * (grid_j_max + 2) + (j + 1)] - p[i * (grid_j_max + 2) + j]) / delta_y;
-}
-int set_noslip(int i_max, int j_max, double** u, double** v, int side) {
-    return set_inflow(i_max, j_max, u, v, side, 0, 0);
+double dp_dx(double* p, int i, int j, int j_max, double delta_x) {
+    return (p[i * (j_max + 2) + j+1] - p[i * (j_max + 2) + j]) / delta_x;
 }
 
-int set_inflow(int i_max, int j_max, double** u, double** v, int side, double u_fix, double v_fix) {
-    int i,j;
-    switch(side) {
-        case TOP:            
-            for (i = 1; i <= i_max; i++) {
-                v[i][j_max] = v_fix; /* Set fixed values on border. */
-                u[i][j_max + 1] = 2 * u_fix - u[i][j_max]; /* Set values with no exact border value by averaging. */
-            }
-            break;
-        case BOTTOM:           
-            for (i = 1; i <= i_max; i++) {
-                v[i][0] = v_fix;
-                u[i][0] = 2 * u_fix - u[i][1];
-            }
-            break;
-        case LEFT:        
-            for (j = 1; j <= j_max; j++) {
-                u[0][j] = u_fix;
-                v[0][j] = 2 * v_fix  - v[1][j];
-            }
-            break;
-        case RIGHT:            
-            for (j = 1; j <= j_max; j++) {
-                u[i_max][j] = u_fix;
-                v[i_max+1][j] = 2 * v_fix - v[i_max][j];
-            }
-            break;
-        default: 
-            return -1;
-    }
-
-    return 0;
+double dp_dy(double* p, int i, int j, int j_max, double delta_y) {
+    return (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_y;
 }
-
 // Adicione novas funções que lidam com arrays linearizados
 int set_noslip_linear(int i_max, int j_max, double* u, double* v, int side) {
-    return set_inflow_linear(i_max, j_max, u, v, side, 0, 0);
+    return set_inflow_linear(i_max, j_max, u, v, side, 0.0, 0.0);
 }
 
 int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix) {
@@ -348,4 +318,33 @@ int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, doub
     }
 
     return 0;
+}
+
+// Criar versão linear da função FG
+void FG_linear(double** F, double** G, double* u_linear, double* v_linear, int i_max, int j_max, 
+              double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
+    // Código que converte o array linear para 2D temporário
+    double** u_temp = (double**)malloc((i_max+2) * sizeof(double*));
+    double** v_temp = (double**)malloc((i_max+2) * sizeof(double*));
+    
+    for (int i = 0; i <= i_max+1; i++) {
+        u_temp[i] = (double*)malloc((j_max+2) * sizeof(double));
+        v_temp[i] = (double*)malloc((j_max+2) * sizeof(double));
+        
+        for (int j = 0; j <= j_max+1; j++) {
+            u_temp[i][j] = u_linear[i * (j_max + 2) + j];
+            v_temp[i][j] = v_linear[i * (j_max + 2) + j];
+        }
+    }
+    
+    // Chama a função FG original
+    FG(F, G, u_temp, v_temp, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
+    
+    // Libera a memória temporária
+    for (int i = 0; i <= i_max+1; i++) {
+        free(u_temp[i]);
+        free(v_temp[i]);
+    }
+    free(u_temp);
+    free(v_temp);
 }
