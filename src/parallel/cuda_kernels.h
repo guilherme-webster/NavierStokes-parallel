@@ -5,10 +5,10 @@
 #define LEFT 2
 #define RIGHT 3
 
-// Inicializa os arrays CUDA unificados
+// Inicializa os arrays CUDA em memória de device
 int initCudaArrays(double** p, double** u, double** v, double** res, double** RHS, int i_max, int j_max);
 
-// Libera os arrays CUDA unificados
+// Libera os arrays CUDA em memória de device
 void freeCudaArrays();
 
 // SOR principal

@@ -62,16 +62,20 @@ bool check_mem_bounds(const void* ptr, size_t size, const char* ptr_name, const 
 #define KERNEL_CHECK(kernel_name) check_kernel_launch(kernel_name, __FILE__, __LINE__)
 #define CHECK_POINTER(ptr, size, name) check_mem_bounds((ptr), (size), (name), __FILE__, __LINE__)
 
-// Variáveis globais para arrays unificados
-double *unified_p = NULL;
-double *unified_res = NULL;
-double *unified_RHS = NULL;
-double *unified_u = NULL;
-double *unified_v = NULL;
-double *unified_F = NULL;
-double *unified_G = NULL;
-double *unified_dpdx = NULL;
-double *unified_dpdy = NULL;
+// Variáveis globais para arrays device memory (GPU)
+double *device_p = NULL;
+double *device_res = NULL;
+double *device_RHS = NULL;
+double *device_u = NULL;
+double *device_v = NULL;
+double *device_F = NULL;
+double *device_G = NULL;
+double *device_dpdx = NULL;
+double *device_dpdy = NULL;
+
+// Arrays temporários na host memory (CPU) para transferências
+double *host_temp = NULL;
+
 double u_max = 0.0;
 double v_max = 0.0;
 double delta_t, delta_x, delta_y, gamma_factor;  // Alterado de gamma para gamma_factor
@@ -139,197 +143,283 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     size_t free_mem = 0, total_mem = 0;
     CUDACHECK(cudaMemGetInfo(&free_mem, &total_mem));
     
-    size_t total_needed = 9 * cuda_array_size; // 9 arrays
+    size_t total_needed = 9 * cuda_array_size + cuda_array_size; // 9 arrays GPU + 1 array temporário CPU
     if (total_needed > free_mem) {
         return -1;
     }
     
-    // Alocar memória unificada
+    // Alocar memória temporária na CPU para transferências
+    host_temp = (double*)malloc(cuda_array_size);
+    if (host_temp == NULL) {
+        return -1;
+    }
+    
+    // Alocar memória apenas no device (GPU)
     cudaError_t err;
     
-    err = cudaMallocManaged(&unified_p, cuda_array_size);
+    err = cudaMalloc(&device_p, cuda_array_size);
     if (err != cudaSuccess) {
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_res, cuda_array_size);
+    err = cudaMalloc(&device_res, cuda_array_size);
     if (err != cudaSuccess) {
-        if (unified_p) cudaFree(unified_p);
+        if (device_p) cudaFree(device_p);
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_RHS, cuda_array_size);
+    err = cudaMalloc(&device_RHS, cuda_array_size);
     if (err != cudaSuccess) {
-        if (unified_p) cudaFree(unified_p);
-        if (unified_res) cudaFree(unified_res);
+        if (device_p) cudaFree(device_p);
+        if (device_res) cudaFree(device_res);
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_u, cuda_array_size);
+    err = cudaMalloc(&device_u, cuda_array_size);
     if (err != cudaSuccess) {
-        if (unified_p) cudaFree(unified_p);
-        if (unified_res) cudaFree(unified_res);
-        if (unified_RHS) cudaFree(unified_RHS);
+        if (device_p) cudaFree(device_p);
+        if (device_res) cudaFree(device_res);
+        if (device_RHS) cudaFree(device_RHS);
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_v, cuda_array_size);
+    err = cudaMalloc(&device_v, cuda_array_size);
     if (err != cudaSuccess) {
-        if (unified_p) cudaFree(unified_p);
-        if (unified_res) cudaFree(unified_res);
-        if (unified_RHS) cudaFree(unified_RHS);
-        if (unified_u) cudaFree(unified_u);
+        if (device_p) cudaFree(device_p);
+        if (device_res) cudaFree(device_res);
+        if (device_RHS) cudaFree(device_RHS);
+        if (device_u) cudaFree(device_u);
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_F, cuda_array_size);
+    err = cudaMalloc(&device_F, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_G, cuda_array_size);
+    err = cudaMalloc(&device_G, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_dpdx, cuda_array_size);
+    err = cudaMalloc(&device_dpdx, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    err = cudaMallocManaged(&unified_dpdy, cuda_array_size);
+    err = cudaMalloc(&device_dpdy, cuda_array_size);
     if (err != cudaSuccess) {
         freeCudaArrays(); // Liberar o que já foi alocado
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
     // Verificar se as alocações foram bem-sucedidas
-    if (!CHECK_POINTER(unified_p, cuda_array_size, "unified_p") ||
-        !CHECK_POINTER(unified_res, cuda_array_size, "unified_res") ||
-        !CHECK_POINTER(unified_RHS, cuda_array_size, "unified_RHS") ||
-        !CHECK_POINTER(unified_u, cuda_array_size, "unified_u") ||
-        !CHECK_POINTER(unified_v, cuda_array_size, "unified_v") ||
-        !CHECK_POINTER(unified_F, cuda_array_size, "unified_F") ||
-        !CHECK_POINTER(unified_G, cuda_array_size, "unified_G") ||
-        !CHECK_POINTER(unified_dpdx, cuda_array_size, "unified_dpdx") ||
-        !CHECK_POINTER(unified_dpdy, cuda_array_size, "unified_dpdy")) {
+    if (!CHECK_POINTER(device_p, cuda_array_size, "device_p") ||
+        !CHECK_POINTER(device_res, cuda_array_size, "device_res") ||
+        !CHECK_POINTER(device_RHS, cuda_array_size, "device_RHS") ||
+        !CHECK_POINTER(device_u, cuda_array_size, "device_u") ||
+        !CHECK_POINTER(device_v, cuda_array_size, "device_v") ||
+        !CHECK_POINTER(device_F, cuda_array_size, "device_F") ||
+        !CHECK_POINTER(device_G, cuda_array_size, "device_G") ||
+        !CHECK_POINTER(device_dpdx, cuda_array_size, "device_dpdx") ||
+        !CHECK_POINTER(device_dpdy, cuda_array_size, "device_dpdy")) {
         freeCudaArrays();
+        free(host_temp);
+        host_temp = NULL;
         return -1;
     }
     
-    // Inicializar os arrays com dados da CPU - ADICIONAR VERIFICAÇÃO DE PONTEIROS NULOS
+    // Inicializar os arrays com dados da CPU e transferir para a GPU
+    // Primeiro, preparar os dados linearizados
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             // Verificar se os ponteiros p[i], res[i], etc são válidos
             if (p[i] == NULL || res[i] == NULL || RHS[i] == NULL) {
+                freeCudaArrays();
+                free(host_temp);
+                host_temp = NULL;
                 return -1;
             }
             
             // Verificação especial para u que tem dimensão i_max+1
             if (i <= i_max && u[i] == NULL) {
+                freeCudaArrays();
+                free(host_temp);
+                host_temp = NULL;
                 return -1;
             }
             
             // Verificação especial para v que tem dimensão j_max+1
             if (v[i] == NULL) {
+                freeCudaArrays();
+                free(host_temp);
+                host_temp = NULL;
                 return -1;
             }
             
             // Verificar se o índice linearizado está dentro dos limites
             size_t idx = i * (j_max + 2) + j;
             if (idx >= (i_max + 2) * (j_max + 2)) {
+                freeCudaArrays();
+                free(host_temp);
+                host_temp = NULL;
                 return -1;
             }
             
             try {
-                unified_p[idx] = p[i][j];
-                unified_res[idx] = res[i][j];
-                unified_RHS[idx] = RHS[i][j];
-                
-                // Verificações especiais para u e v devido às dimensões diferentes
-                if (i <= i_max && j <= j_max + 1) {
-                    unified_u[idx] = u[i][j];
-                }
-                
-                if (i <= i_max + 1 && j <= j_max) {
-                    unified_v[idx] = v[i][j];
-                }
-                
-                unified_F[idx] = 0.0;
-                unified_G[idx] = 0.0;
-                unified_dpdx[idx] = 0.0;
-                unified_dpdy[idx] = 0.0;
+                // Preencher arrays temporários para transferência
+                host_temp[idx] = p[i][j];
             } catch (...) {
+                freeCudaArrays();
+                free(host_temp);
+                host_temp = NULL;
                 return -1;
             }
         }
     }
     
-    // Prefetch para GPU
-    int device = -1;
-    CUDACHECK(cudaGetDevice(&device));
+    // Transferir array p para GPU
+    CUDACHECK(cudaMemcpy(device_p, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
     
-    CUDACHECK(cudaMemPrefetchAsync(unified_p, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_RHS, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_res, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_u, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_v, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_F, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_G, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_dpdx, cuda_array_size, device, NULL));
-    CUDACHECK(cudaMemPrefetchAsync(unified_dpdy, cuda_array_size, device, NULL));
+    // Preencher e transferir array res
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            size_t idx = i * (j_max + 2) + j;
+            host_temp[idx] = res[i][j];
+        }
+    }
+    CUDACHECK(cudaMemcpy(device_res, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Preencher e transferir array RHS
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            size_t idx = i * (j_max + 2) + j;
+            host_temp[idx] = RHS[i][j];
+        }
+    }
+    CUDACHECK(cudaMemcpy(device_RHS, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Preencher e transferir array u (com verificações especiais)
+    memset(host_temp, 0, cuda_array_size);
+    for (int i = 0; i <= i_max; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            size_t idx = i * (j_max + 2) + j;
+            host_temp[idx] = u[i][j];
+        }
+    }
+    CUDACHECK(cudaMemcpy(device_u, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Preencher e transferir array v (com verificações especiais)
+    memset(host_temp, 0, cuda_array_size);
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max; j++) {
+            size_t idx = i * (j_max + 2) + j;
+            host_temp[idx] = v[i][j];
+        }
+    }
+    CUDACHECK(cudaMemcpy(device_v, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    
+    // Inicializar F, G, dpdx e dpdy com zeros
+    memset(host_temp, 0, cuda_array_size);
+    CUDACHECK(cudaMemcpy(device_F, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_G, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_dpdx, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_dpdy, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
     
     return 0;
 }
 
 // Free CUDA arrays once at the end
 void freeCudaArrays() {
-    if (unified_p) {
-        CUDACHECK(cudaFree(unified_p));
-        unified_p = NULL;
+    if (device_p) {
+        CUDACHECK(cudaFree(device_p));
+        device_p = NULL;
     }
     
-    if (unified_res) {
-        CUDACHECK(cudaFree(unified_res));
-        unified_res = NULL;
+    if (device_res) {
+        CUDACHECK(cudaFree(device_res));
+        device_res = NULL;
     }
     
-    if (unified_RHS) {
-        CUDACHECK(cudaFree(unified_RHS));
-        unified_RHS = NULL;
+    if (device_RHS) {
+        CUDACHECK(cudaFree(device_RHS));
+        device_RHS = NULL;
     }
     
-    if (unified_u) {
-        CUDACHECK(cudaFree(unified_u));
-        unified_u = NULL;
+    if (device_u) {
+        CUDACHECK(cudaFree(device_u));
+        device_u = NULL;
     }
     
-    if (unified_v) {
-        CUDACHECK(cudaFree(unified_v));
-        unified_v = NULL;
+    if (device_v) {
+        CUDACHECK(cudaFree(device_v));
+        device_v = NULL;
     }
     
-    if (unified_F) {
-        CUDACHECK(cudaFree(unified_F));
-        unified_F = NULL;
+    if (device_F) {
+        CUDACHECK(cudaFree(device_F));
+        device_F = NULL;
     }
     
-    if (unified_G) {
-        CUDACHECK(cudaFree(unified_G));
-        unified_G = NULL;
+    if (device_G) {
+        CUDACHECK(cudaFree(device_G));
+        device_G = NULL;
     }
     
-    if (unified_dpdx) {
-        CUDACHECK(cudaFree(unified_dpdx));
-        unified_dpdx = NULL;
+    if (device_dpdx) {
+        CUDACHECK(cudaFree(device_dpdx));
+        device_dpdx = NULL;
     }
     
-    if (unified_dpdy) {
-        CUDACHECK(cudaFree(unified_dpdy));
-        unified_dpdy = NULL;
+    if (device_dpdy) {
+        CUDACHECK(cudaFree(device_dpdy));
+        device_dpdy = NULL;
+    }
+    
+    if (host_temp) {
+        free(host_temp);
+        host_temp = NULL;
+    }
+    
+    if (device_F) {
+        CUDACHECK(cudaFree(device_F));
+        device_F = NULL;
+    }
+    
+    if (device_G) {
+        CUDACHECK(cudaFree(device_G));
+        device_G = NULL;
+    }
+    
+    if (device_dpdx) {
+        CUDACHECK(cudaFree(device_dpdx));
+        device_dpdx = NULL;
+    }
+    
+    if (device_dpdy) {
+        CUDACHECK(cudaFree(device_dpdy));
+        device_dpdy = NULL;
     }
 }
 
@@ -342,37 +432,45 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     double norm_p = 0.0;
     
     // Calcular norma inicial de pressão
+    // Primeiro, transferir dados do device para o host
+    CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
+    
     for (int i = 1; i <= i_max; i++) {
         for(int j = 1; j <= j_max; j++) {
-            norm_p += unified_p[i * (j_max + 2) + j] * unified_p[i * (j_max + 2) + j];
+            norm_p += host_temp[i * (j_max + 2) + j] * host_temp[i * (j_max + 2) + j];
         }
     }
     norm_p = sqrt(norm_p / i_max / j_max);
     
     // 1. Calcular u_max e v_max usando kernel max_mat_kernel
-    double *d_umax, *d_vmax;
-    CUDACHECK(cudaMallocManaged(&d_umax, sizeof(double)));
-    CUDACHECK(cudaMallocManaged(&d_vmax, sizeof(double)));
+    double *d_umax, *d_vmax, h_umax = 0.0, h_vmax = 0.0;
+    CUDACHECK(cudaMalloc(&d_umax, sizeof(double)));
+    CUDACHECK(cudaMalloc(&d_vmax, sizeof(double)));
     
     if (!CHECK_POINTER(d_umax, sizeof(double), "d_umax") || 
         !CHECK_POINTER(d_vmax, sizeof(double), "d_vmax")) {
         return -1;
     }
     
-    *d_umax = 0.0;
-    *d_vmax = 0.0;
+    // Inicializar com zero
+    CUDACHECK(cudaMemset(d_umax, 0, sizeof(double)));
+    CUDACHECK(cudaMemset(d_vmax, 0, sizeof(double)));
+    
     int max_blocks = 32; // Ajuste conforme o tamanho do domínio
     int max_threads = 256;
     
-    max_mat_kernel_double<<<max_blocks, max_threads>>>(unified_u, i_max, j_max, d_umax);
+    max_mat_kernel_double<<<max_blocks, max_threads>>>(device_u, i_max, j_max, d_umax);
     KERNEL_CHECK("max_mat_kernel_double (u)");
     
-    max_mat_kernel_double<<<max_blocks, max_threads>>>(unified_v, i_max, j_max, d_vmax);
+    max_mat_kernel_double<<<max_blocks, max_threads>>>(device_v, i_max, j_max, d_vmax);
     KERNEL_CHECK("max_mat_kernel_double (v)");
     
-    u_max = *d_umax;
-    v_max = *d_vmax;
+    // Copiar resultados de volta para o host
+    CUDACHECK(cudaMemcpy(&h_umax, d_umax, sizeof(double), cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(&h_vmax, d_vmax, sizeof(double), cudaMemcpyDeviceToHost));
     
+    u_max = h_umax;
+    v_max = h_vmax;
     
     CUDACHECK(cudaFree(d_umax));
     CUDACHECK(cudaFree(d_vmax));
@@ -387,16 +485,16 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     dim3 block1D_i((i_max + 127) / 128); // for sides with i_max
     int threads1D = 128;
     if (problem == 1){
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, LEFT);
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, RIGHT);
-        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, BOTTOM);
-        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, TOP, 1.0, 0.0);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, LEFT);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, RIGHT);
+        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, BOTTOM);
+        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, TOP, 1.0, 0.0);
     }
     else if (problem == 2){
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, LEFT);
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, RIGHT);
-        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, BOTTOM);
-        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, TOP, sin(f*(*t)), 0.0);           
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, LEFT);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, RIGHT);
+        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, BOTTOM);
+        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, TOP, sin(f*(*t)), 0.0);           
     }
     else {
         return -1;
@@ -407,50 +505,57 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     // 2. FG calculation (GPU)
     dim3 block2D(16, 16);
     dim3 grid2D((i_max+block2D.x-1)/block2D.x, (j_max+block2D.y-1)/block2D.y);
-    FG_linear_kernel<<<grid2D, block2D>>>(unified_u, unified_v, unified_F, unified_G, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
+    FG_linear_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
     CUDACHECK(cudaDeviceSynchronize());
     printf("F, G calculated!\n");
 
     // 3. RHS calculation (GPU)
-    RHS_kernel<<<grid2D, block2D>>>(unified_F, unified_G, unified_RHS, i_max, j_max, delta_t, delta_x, delta_y);
+    RHS_kernel<<<grid2D, block2D>>>(device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
     CUDACHECK(cudaDeviceSynchronize());
     printf("RHS calculated!\n");
 
-    // 4. Copy p, RHS, res to unified arrays (GPU, if needed)
-    // (If all arrays are already on GPU, this step can be skipped)
-
-    // 5. SOR loop (already uses GPU kernels)
+    // 4. SOR loop (GPU calculations)
     dim3 blockSOR(16, 16);
     dim3 gridSOR((i_max+blockSOR.x-1)/blockSOR.x, (j_max+blockSOR.y-1)/blockSOR.y);
     while (it < max_it) {
         // Atualizar condições de contorno de pressão (ghost cells) na GPU
-        // Kernel para copiar bordas (pode ser otimizado, mas aqui faz em CPU para simplicidade)
+        // Primeiro, transferir array p do device para o host
+        CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
+        
+        // Atualizar bordas no host
         for (int i = 1; i <= i_max; i++) {
-            unified_p[i * (j_max + 2) + 0] = unified_p[i * (j_max + 2) + 1];
-            unified_p[i * (j_max + 2) + (j_max + 1)] = unified_p[i * (j_max + 2) + j_max];
+            host_temp[i * (j_max + 2) + 0] = host_temp[i * (j_max + 2) + 1];
+            host_temp[i * (j_max + 2) + (j_max + 1)] = host_temp[i * (j_max + 2) + j_max];
         }
         for (int j = 1; j <= j_max; j++) {
-            unified_p[0 * (j_max + 2) + j] = unified_p[1 * (j_max + 2) + j];
-            unified_p[(i_max + 1) * (j_max + 2) + j] = unified_p[i_max * (j_max + 2) + j];
+            host_temp[0 * (j_max + 2) + j] = host_temp[1 * (j_max + 2) + j];
+            host_temp[(i_max + 1) * (j_max + 2) + j] = host_temp[i_max * (j_max + 2) + j];
         }
-        CUDACHECK(cudaDeviceSynchronize());
+        
+        // Copiar de volta para o device
+        CUDACHECK(cudaMemcpy(device_p, host_temp, cuda_array_size, cudaMemcpyHostToDevice));
+        
         // Red points
-        RedSORKernel<<<gridSOR, blockSOR>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
+        RedSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Black points
-        BlackSORKernel<<<gridSOR, blockSOR>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
+        BlackSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Calcular resíduos
-        CalculateResidualKernel<<<gridSOR, blockSOR>>>(unified_p, unified_res, unified_RHS, i_max, j_max, dxdx, dydy);
+        CalculateResidualKernel<<<gridSOR, blockSOR>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Verificar convergência (CPU reduction)
         double res_norm = 0.0;
+        
+        // Transferir array res do device para o host
+        CUDACHECK(cudaMemcpy(host_temp, device_res, cuda_array_size, cudaMemcpyDeviceToHost));
+        
         for (int i = 1; i <= i_max; i++) {
             for (int j = 1; j <= j_max; j++) {
-                res_norm += unified_res[i * (j_max + 2) + j] * unified_res[i * (j_max + 2) + j];
+                res_norm += host_temp[i * (j_max + 2) + j] * host_temp[i * (j_max + 2) + j];
             }
         }
         res_norm = sqrt(res_norm / (i_max * j_max));
@@ -461,7 +566,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     }
     printf("SOR complete!\n");
     // 4. Atualizar u e v usando kernel update_uv_kernel
-    update_uv_kernel<<<grid2D, block2D>>>(unified_u, unified_v, unified_F, unified_G, unified_p, i_max, j_max, delta_t, delta_x, delta_y);
+    update_uv_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK("update_uv_kernel");
     CUDACHECK(cudaDeviceSynchronize());
     
@@ -477,11 +582,21 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     
     int center_idx = center_i * (j_max + 2) + center_j;
     
+    // Transferir dados de u, v, p do device para o host para gerar saída
+    CUDACHECK(cudaMemcpy(host_temp, device_u, cuda_array_size, cudaMemcpyDeviceToHost));
+    double u_center = host_temp[center_idx];
+    
+    CUDACHECK(cudaMemcpy(host_temp, device_v, cuda_array_size, cudaMemcpyDeviceToHost));
+    double v_center = host_temp[center_idx];
+    
+    CUDACHECK(cudaMemcpy(host_temp, device_p, cuda_array_size, cudaMemcpyDeviceToHost));
+    double p_center = host_temp[center_idx];
+    
     // Output central values for debugging
     printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
-    printf("U-CENTER: %.6f\n", unified_u[center_idx]);
-    printf("V-CENTER: %.6f\n", unified_v[center_idx]);
-    printf("P-CENTER: %.6f\n", unified_p[center_idx]);
+    printf("U-CENTER: %.6f\n", u_center);
+    printf("V-CENTER: %.6f\n", v_center);
+    printf("P-CENTER: %.6f\n", p_center);
     
     (*n_out)++;  // Incrementa o valor apontado pelo ponteiro
     *t += delta_t;  // Atualiza o tempo
@@ -670,7 +785,7 @@ __host__ __device__ double n_min(int n, double a, double b, double c, double d) 
 // double* d_max;
 // cudaMallocManaged(&d_max, sizeof(double));
 // *d_max = 0.0;
-// max_mat_kernel<<<numBlocks, blockSize>>>(unified_u, i_max, j_max, d_max);
+// max_mat_kernel<<<numBlocks, blockSize>>>(device_u, i_max, j_max, d_max);
 // cudaDeviceSynchronize();
 // double max_val = *d_max;
 // cudaFree(d_max);
