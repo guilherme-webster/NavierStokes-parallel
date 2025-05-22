@@ -33,6 +33,8 @@ __global__ void MultiStepSORKernel(double* p, double* RHS, double* res,
                                    int i_max, int j_max, double omega, 
                                    double dxdx, double dydy, int iterations);
 
+__global__ void setBoundaryFGKernel(double* F, double* G, int i_max, int j_max);
+
 // Error checking helper
 void check_cuda(cudaError_t error, const char *filename, const int line);
 #define CUDACHECK(cmd) check_cuda(cmd, __FILE__, __LINE__)

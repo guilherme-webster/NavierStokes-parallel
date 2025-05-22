@@ -56,7 +56,7 @@ __global__ void NavierStokesStepKernel(
         s_u[(tx-1) * s_width + ty] = u[(i-1) * (j_max + 2) + j];
         s_v[(tx-1) * s_width + ty] = v[(i-1) * (j_max + 2) + j];
     }
-    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+    if (threadIdx.x == blockDim.x-1 && i <= i_max) {
         s_u[(tx+1) * s_width + ty] = u[(i+1) * (j_max + 2) + j];
         s_v[(tx+1) * s_width + ty] = v[(i+1) * (j_max + 2) + j];
     }
@@ -66,72 +66,68 @@ __global__ void NavierStokesStepKernel(
         s_u[tx * s_width + (ty-1)] = u[i * (j_max + 2) + (j-1)];
         s_v[tx * s_width + (ty-1)] = v[i * (j_max + 2) + (j-1)];
     }
-    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+    if (threadIdx.y == blockDim.y-1 && j <= j_max) {
         s_u[tx * s_width + (ty+1)] = u[i * (j_max + 2) + (j+1)];
         s_v[tx * s_width + (ty+1)] = v[i * (j_max + 2) + (j+1)];
     }
     
     __syncthreads();
     
-    // Skip boundary points and points outside the valid domain
-    if (i > i_max || j > j_max) return;
+    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
+        // Calculate F term using shared memory
+        // Original condition: if (i < i_max && j > 0)
+        // Corrected: F should be calculated for all i in [1, i_max]
+        // The outer if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) already covers this.
+        // No inner 'if' needed if F is cell-centered and defined everywhere u is.
+        // However, to match the update domain of u, F is needed for u(i,j) where i goes to i_max-1.
+        // If u is updated up to i_max, F must be computed up to i_max.
+        // Let's assume F, G, u, v are all cell-centered and should be computed for all interior cells.
+
+        // Calculate F term
+        double u_central_for_F = s_u[tx * s_width + ty];
+        double v_average_for_F = (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty] + 
+                                  s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * 0.25;
+        
+        double du2_dx_for_F = ((s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) * (s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) -
+                               (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]) * (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]))
+                              / (4.0 * delta_x);
+        
+        double duv_dy_for_F = ((s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) * (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) -
+                               (s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * (s_u[tx * s_width + (ty-1)] + s_u[tx * s_width + ty]))
+                              / (4.0 * delta_y);
+        
+        double d2u_dx2_for_F = (s_u[(tx+1) * s_width + ty] - 2.0 * s_u[tx * s_width + ty] + s_u[(tx-1) * s_width + ty])
+                               / (delta_x * delta_x);
+        
+        double d2u_dy2_for_F = (s_u[tx * s_width + (ty+1)] - 2.0 * s_u[tx * s_width + ty] + s_u[tx * s_width + (ty-1)])
+                               / (delta_y * delta_y);
+        
+        F[g_idx] = u_central_for_F + delta_t * (
+                                     1.0/Re * (d2u_dx2_for_F + d2u_dy2_for_F) -
+                                     du2_dx_for_F - duv_dy_for_F + g_x);
     
-    // Calculate F term using shared memory
-    if (i < i_max && j > 0) {
-        double u_central = s_u[tx * s_width + ty];
-        double v_average = (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty] + 
-                           s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * 0.25;
+        // Calculate G term
+        double v_central_for_G = s_v[tx * s_width + ty];
+        double u_average_for_G = (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)] + 
+                                  s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * 0.25;
         
-        double du2_dx = ((s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty])
-                       * (s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) -
-                        (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty])
-                       * (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]))
-                      / (4.0 * delta_x);
+        double duv_dx_for_G = ((s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) * (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) -
+                               (s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * (s_v[(tx-1) * s_width + ty] + s_v[tx * s_width + ty]))
+                              / (4.0 * delta_x);
         
-        double duv_dy = ((s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty])
-                       * (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) -
-                        (s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)])
-                       * (s_u[tx * s_width + (ty-1)] + s_u[tx * s_width + ty]))
-                      / (4.0 * delta_y);
+        double dv2_dy_for_G = ((s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) * (s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) -
+                               (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]) * (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]))
+                              / (4.0 * delta_y);
         
-        double d2u_dx2 = (s_u[(tx+1) * s_width + ty] - 2.0 * s_u[tx * s_width + ty] + s_u[(tx-1) * s_width + ty])
-                        / (delta_x * delta_x);
+        double d2v_dx2_for_G = (s_v[(tx+1) * s_width + ty] - 2.0 * s_v[tx * s_width + ty] + s_v[(tx-1) * s_width + ty])
+                               / (delta_x * delta_x);
         
-        double d2u_dy2 = (s_u[tx * s_width + (ty+1)] - 2.0 * s_u[tx * s_width + ty] + s_u[tx * s_width + (ty-1)])
-                        / (delta_y * delta_y);
+        double d2v_dy2_for_G = (s_v[tx * s_width + (ty+1)] - 2.0 * s_v[tx * s_width + ty] + s_v[tx * s_width + (ty-1)])
+                               / (delta_y * delta_y);
         
-        F[g_idx] = u_central + delta_t * (
-                             1.0/Re * (d2u_dx2 + d2u_dy2) -
-                             du2_dx - duv_dy + g_x);
-    }
-    
-    // Calculate G term using shared memory
-    if (j < j_max && i > 0) {
-        double v_central = s_v[tx * s_width + ty];
-        double u_average = (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)] + 
-                           s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * 0.25;
-        
-        double duv_dx = ((s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)])
-                       * (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) -
-                        (s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)])
-                       * (s_v[(tx-1) * s_width + ty] + s_v[tx * s_width + ty]))
-                      / (4.0 * delta_x);
-        
-        double dv2_dy = ((s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)])
-                       * (s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) -
-                        (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty])
-                       * (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]))
-                      / (4.0 * delta_y);
-        
-        double d2v_dx2 = (s_v[(tx+1) * s_width + ty] - 2.0 * s_v[tx * s_width + ty] + s_v[(tx-1) * s_width + ty])
-                        / (delta_x * delta_x);
-        
-        double d2v_dy2 = (s_v[tx * s_width + (ty+1)] - 2.0 * s_v[tx * s_width + ty] + s_v[tx * s_width + (ty-1)])
-                        / (delta_y * delta_y);
-        
-        G[g_idx] = v_central + delta_t * (
-                             1.0/Re * (d2v_dx2 + d2v_dy2) -
-                             duv_dx - dv2_dy + g_y);
+        G[g_idx] = v_central_for_G + delta_t * (
+                                     1.0/Re * (d2v_dx2_for_G + d2v_dy2_for_G) -
+                                     duv_dx_for_G - dv2_dy_for_G + g_y);
     }
 }
 
@@ -178,13 +174,13 @@ __global__ void RedSORKernel(double* p, double* RHS, int i_max, int j_max, doubl
     if (threadIdx.x == 0 && i > 1) {
         s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
     }
-    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+    if (threadIdx.x == blockDim.x-1 && i <= i_max) {
         s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
     }
     if (threadIdx.y == 0 && j > 1) {
         s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
     }
-    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+    if (threadIdx.y == blockDim.y-1 && j <= j_max) {
         s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
     }
     
@@ -231,13 +227,13 @@ __global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, dou
     if (threadIdx.x == 0 && i > 1) {
         s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
     }
-    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+    if (threadIdx.x == blockDim.x-1 && i <= i_max) {
         s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
     }
     if (threadIdx.y == 0 && j > 1) {
         s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
     }
-    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+    if (threadIdx.y == blockDim.y-1 && j <= j_max) {
         s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
     }
     
@@ -305,13 +301,13 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
     if (threadIdx.x == 0 && i > 1) {
         s_p[(tx-1) * s_width + ty] = p[(i-1) * (j_max + 2) + j];
     }
-    if (threadIdx.x == blockDim.x-1 && i < i_max) {
+    if (threadIdx.x == blockDim.x-1 && i <= i_max) {
         s_p[(tx+1) * s_width + ty] = p[(i+1) * (j_max + 2) + j];
     }
     if (threadIdx.y == 0 && j > 1) {
         s_p[tx * s_width + (ty-1)] = p[i * (j_max + 2) + (j-1)];
     }
-    if (threadIdx.y == blockDim.y-1 && j < j_max) {
+    if (threadIdx.y == blockDim.y-1 && j <= j_max) {
         s_p[tx * s_width + (ty+1)] = p[i * (j_max + 2) + (j+1)];
     }
     
@@ -330,11 +326,11 @@ __global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G,
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    if (i < i_max && j <= j_max && j > 0) {
+    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
         u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
     }
     
-    if (i <= i_max && j < j_max) {
+    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
         v[i * (j_max + 2) + j] = G[i * (j_max + 2) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
     }
 }
@@ -360,9 +356,9 @@ __global__ void MultiStepSORKernel(double* p, double* RHS, double* res,
     // Check bounds once
     bool valid = (i <= i_max && j <= j_max && i > 0 && j > 0);
     bool valid_halo_left = (threadIdx.x == 0 && i > 1);
-    bool valid_halo_right = (threadIdx.x == blockDim.x-1 && i < i_max);
+    bool valid_halo_right = (threadIdx.x == blockDim.x-1 && i <= i_max); //< to <=
     bool valid_halo_bottom = (threadIdx.y == 0 && j > 1);
-    bool valid_halo_top = (threadIdx.y == blockDim.y-1 && j < j_max);
+    bool valid_halo_top = (threadIdx.y == blockDim.y-1 && j <= j_max); // < to <=
     bool is_red = ((i + j) % 2 == 0);
     bool is_black = ((i + j) % 2 == 1);
     
@@ -474,5 +470,27 @@ __global__ void MultiStepSORKernel(double* p, double* RHS, double* res,
                           (p[i * (j_max + 2) + (j+1)] - 2.0 * p[g_idx] + p[i * (j_max + 2) + (j-1)]) / dydy - 
                           RHS[g_idx];
         res[g_idx] = residual;
+    }
+}
+
+// Add boundary conditions for F and G
+__global__ void setBoundaryFGKernel(double* F, double* G, int i_max, int j_max) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    // F boundary conditions
+    if (j >= 1 && j <= j_max && i == 0) {
+        F[i * (j_max + 2) + j] = 0.0; // Left
+    }
+    if (j >= 1 && j <= j_max && i == i_max) {
+        F[i * (j_max + 2) + j] = 0.0; // Right
+    }
+    
+    // G boundary conditions
+    if (i >= 1 && i <= i_max && j == 0) {
+        G[i * (j_max + 2) + j] = 0.0; // Bottom
+    }
+    if (i >= 1 && i <= i_max && j == j_max) {
+        G[i * (j_max + 2) + j] = 0.0; // Top
     }
 }

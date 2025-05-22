@@ -11,6 +11,25 @@
 
 #define MAX_TIMESTEPS 1000  // Fixed number of timesteps instead of time limit
 
+__device__ double atomicMaxDouble(double* address, double val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull;
+    unsigned long long int assumed;
+
+    do {
+        assumed = old;
+        double currentVal = __longlong_as_double(assumed);
+        if (val > currentVal) {
+            old = atomicCAS(address_as_ull, assumed, __double_as_longlong(val));
+        } else {
+            break;
+        }
+    } while (assumed != old);
+    
+    return __longlong_as_double(old);
+}
+
 // CUDA kernel for finding the maximum value in an array
 __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_max) {
     // Checking thread bounds explicitly
@@ -28,7 +47,7 @@ __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_m
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
     s_max[threadId] = 0.0;
-    if (i <= i_max && j <= j_max) {
+    if (i <= i_max+1 && j <= j_max+1) {
         s_max[threadId] = fabs(array[i * (j_max + 2) + j]);
     }
     
@@ -44,17 +63,10 @@ __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_m
     
     // Write result for this block to global memory
     if (threadId == 0) {
-    unsigned long long int* address = (unsigned long long int*)max_val;
-    unsigned long long int old = *address;
-    unsigned long long int assumed;
-    do {
-        assumed = old;
-        double current_max = __longlong_as_double(assumed);
-        if (s_max[0] <= current_max) break;
-        old = atomicCAS(address, assumed, __double_as_longlong(s_max[0]));
-    } while (assumed != old);
+        atomicMaxDouble(max_val, s_max[0]);
+    }
 }
-}
+
 
 // CUDA kernel to set boundary conditions
 __global__ void setBoundaryConditionsKernel(
@@ -232,9 +244,38 @@ int main(int argc, char* argv[])
     double t = 0.0;
     
     printf("Starting %d timesteps simulation...\n", MAX_TIMESTEPS);
+
+    // Add a counter to track iterations for debug
+    int sor_iterations = 0;
+    const int min_iterations = 10;
     
     // Main simulation loop - ALL COMPUTATION STAYS ON GPU
     for (int timestep = 0; timestep < MAX_TIMESTEPS; timestep++) {
+
+        // Set boundary conditions directly on GPU
+        setBoundaryConditionsKernel<<<boundaryGridSize, blockSize>>>(d_u, d_v, i_max, j_max, problem, 1.0, t, f);
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
+
+        if (timestep == 0) {
+        printf("Boundary check: problem=%d, lid_velocity=%.2f\n", problem, 1.0);
+        
+        // Check a few boundary points
+        printf("Top-mid u(i=%d,j=%d): %.6f\n", 
+            i_max/2, j_max+1, d_u[(i_max/2) * (j_max + 2) + (j_max+1)]);
+        printf("Top-left u(i=1,j=%d): %.6f\n", 
+            j_max+1, d_u[1 * (j_max + 2) + (j_max+1)]);
+        printf("Top-right u(i=%d,j=%d): %.6f\n", 
+            i_max, j_max+1, d_u[i_max * (j_max + 2) + (j_max+1)]);
+        }
+
+        if (timestep < 2) {
+        printf("After boundary setup (ts=%d): Top-mid u=%.6f\n", 
+            timestep, d_u[(i_max/2) * (j_max + 2) + (j_max+1)]);
+        
+        // Force a synchronization to make sure value is current
+        CUDACHECK(cudaDeviceSynchronize());
+
         // Reset max values - direct access to managed memory
         *d_u_max = 0.0;
         *d_v_max = 0.0;
@@ -254,11 +295,6 @@ int main(int argc, char* argv[])
                             delta_x / safe_u_max, delta_y / safe_v_max);
         gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
 
-        // Set boundary conditions directly on GPU
-        setBoundaryConditionsKernel<<<boundaryGridSize, blockSize>>>(
-            d_u, d_v, i_max, j_max, problem, 1.0, t, f);
-        CUDACHECK(cudaGetLastError());
-
         // Print progress occasionally
         if (timestep % 100 == 0) {
             printf("Step %d of %d (%.1f%%), u_max=%.6f, v_max=%.6f\n", timestep, MAX_TIMESTEPS, 
@@ -270,51 +306,92 @@ int main(int argc, char* argv[])
             d_u, d_v, NULL, d_F, d_G, NULL, NULL,
             i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma, 0.0, 0.0, 0);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
+
+        if (timestep == 0) {
+        // Check a few F values
+        printf("F at center(i=%d,j=%d): %.6e\n", 
+            i_max/2, j_max/2, d_F[(i_max/2) * (j_max + 2) + (j_max/2)]);
+        printf("G at center(i=%d,j=%d): %.6e\n", 
+            i_max/2, j_max/2, d_G[(i_max/2) * (j_max + 2) + (j_max/2)]);
+        }
+
+        // This is critical for correct RHS calculation
+        setBoundaryFGKernel<<<boundaryGridSize, blockSize>>>(d_F, d_G, i_max, j_max);
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
 
         // Calculate RHS directly on device
         CalculateRHSKernel<<<gridSize, blockSize>>>(
             d_F, d_G, d_RHS, i_max, j_max, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
 
+        // After calculating RHS
+            if (timestep < 2) {
+                // Check RHS values
+                printf("RHS at center(i=%d,j=%d): %.6e\n", 
+                    i_max/2, j_max/2, d_RHS[(i_max/2) * (j_max + 2) + (j_max/2)]);
+                
+                // Check another point near the boundary
+                printf("RHS near top(i=%d,j=%d): %.6e\n", 
+                    i_max/2, j_max-1, d_RHS[(i_max/2) * (j_max + 2) + (j_max-1)]);
+        }
+
         // SOR for pressure directly on device
         double dxdx = delta_x * delta_x;
         double dydy = delta_y * delta_y;
         int it = 0;
         double residual = 1.0;
+
+        // Add boundary conditions for F and G arrays (missing step)
+    // This is critical for correct RHS calculation
+    setBoundaryFGKernel<<<boundaryGridSize, blockSize>>>(d_F, d_G, i_max, j_max);
+    CUDACHECK(cudaGetLastError());
+    CUDACHECK(cudaDeviceSynchronize());
+
+    // Use a more conservative omega value for the first few iterations
+    double current_omega = omega;
+    if (timestep < 5) current_omega = 1.0; // Use Gauss-Seidel for stability initially
+
+    while (it < min_iterations || (it < max_it && residual > epsilon)) {
+        UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
+        CUDACHECK(cudaGetLastError());
+
+        // Use a more conservative omega for stability
+        RedSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, current_omega, dxdx, dydy);
+        CUDACHECK(cudaGetLastError());
+
+        UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
+        CUDACHECK(cudaGetLastError());
+
+        BlackSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, current_omega, dxdx, dydy);
+        CUDACHECK(cudaGetLastError());
         
-        while (it < max_it && residual > epsilon) {
-            // Use multi-step SOR with internal iterations
-            int internal_iterations = 10;
-            
-            if (it + internal_iterations >= max_it) {
-                internal_iterations = max_it - it;
-            }
-            
-            MultiStepSORKernel<<<gridSize, blockSize>>>(
-                d_p, d_RHS, (it % 10 == 0) ? d_res : NULL, 
-                i_max, j_max, omega, dxdx, dydy, internal_iterations);
+        // Calculate residual every iteration for early timesteps
+        if (timestep < 5 || it % 10 == 0) {
+            CalculateResidualKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
             CUDACHECK(cudaGetLastError());
+
+            *d_sum = 0.0;
+            calculateResidualSumKernel<<<gridSize, blockSize>>>(d_res, d_sum, i_max, j_max);
+            CUDACHECK(cudaGetLastError());
+            CUDACHECK(cudaDeviceSynchronize());
             
-            // Check convergence occasionally
-            if (it % 10 == 0) {
-                CalculateResidualKernel<<<gridSize, blockSize>>>(
-                    d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
-                CUDACHECK(cudaGetLastError());
-                
-                // Reset sum to zero
-                *d_sum = 0.0;
-                
-                // Calculate sum of squares on GPU
-                calculateResidualSumKernel<<<gridSize, blockSize>>>(d_res, d_sum, i_max, j_max);
-                CUDACHECK(cudaGetLastError());
-                
-                // Ensure calculation is complete before accessing result
-                CUDACHECK(cudaDeviceSynchronize());
-                
-                // Calculate final norm
-                residual = sqrt(*d_sum / (i_max * j_max));
+            residual = sqrt(*d_sum / (i_max * j_max));
+            
+            if (timestep < 2 && (it < 10 || it % 50 == 0)) {
+                printf("SOR it %d: residual=%.8e\n", it, residual);
             }
-            it += internal_iterations;
+        }
+        
+        sor_iterations++;
+        it++;
+    }
+
+        // Print SOR stats
+        if (timestep < 2) {
+            printf("SOR completed after %d iterations. Final residual: %.8e\n", 
+                sor_iterations, residual);
         }
 
         // Update velocities directly on device
@@ -334,9 +411,9 @@ int main(int argc, char* argv[])
     printf("\n==================== FINAL RESULTS ====================\n");
     printf("Simulation completed: %d steps in %.6f seconds\n", MAX_TIMESTEPS, time_spent);
     printf("Final time reached: %.6f\n", t);
-    printf("U-CENTER: %.6f\n", d_u[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
-    printf("V-CENTER: %.6f\n", d_v[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
-    printf("P-CENTER: %.6f\n", d_p[(i_max/2) * (j_max + 2) + (j_max/2) + 1]);
+    printf("U-CENTER: %.6f\n", d_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("V-CENTER: %.6f\n", d_v[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("P-CENTER: %.6f\n", d_p[(i_max/2) * (j_max + 2) + (j_max/2)]);
     printf("Average time per step: %.6f seconds\n", time_spent/MAX_TIMESTEPS);
     printf("=========================================================\n");
 
@@ -357,6 +434,5 @@ int main(int argc, char* argv[])
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
 
     return 0;
+    }
 }
-
-//making the main loop itself a kernel
