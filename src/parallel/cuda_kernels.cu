@@ -5,13 +5,6 @@
 #include <stdarg.h>
 
 // Funções utilitárias para CUDA
-#ifdef __CUDACC__
-__device__ unsigned long long int __double_as_longlong(double val) {
-    unsigned long long int ret;
-    memcpy(&ret, &val, sizeof(double));
-    return ret;
-}
-#endif
 
 // Add CUDA error checking
 void check_cuda(cudaError_t error, const char *filename, const int line)
@@ -335,9 +328,13 @@ __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, d
         double my_val = sdata[0];
         while (my_val > old_val) {
             double assumed = old_val;
+            // Use union for type conversion instead of __double_as_longlong
+            union { double d; unsigned long long int i; } old_union, new_union;
+            old_union.d = old_val;
+            new_union.d = my_val;
             old_val = atomicCAS((unsigned long long int*)max_val, 
-                                 __double_as_longlong(old_val),
-                                 __double_as_longlong(my_val));
+                                 old_union.i,
+                                 new_union.i);
             // Se old_val é como assumimos, conseguimos atualizar
             if (old_val == assumed)
                 break;
