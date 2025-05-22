@@ -43,8 +43,8 @@ __global__ void findMaxKernel(double* array, double* max_val, int i_max, int j_m
     
     __shared__ double s_max[256];
     
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
     
     s_max[threadId] = 0.0;
     if (i <= i_max+1 && j <= j_max+1) {
@@ -282,11 +282,16 @@ int main(int argc, char* argv[])
         
         // Find max values on GPU
         dim3 reduceBlock(16, 16);
-        findMaxKernel<<<gridSize, reduceBlock>>>(d_u, d_u_max, i_max, j_max);
+        findMaxKernel<<<boundaryGridSize, reduceBlock>>>(d_u, d_u_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
         
-        findMaxKernel<<<gridSize, reduceBlock>>>(d_v, d_v_max, i_max, j_max);
+        findMaxKernel<<<boundaryGridSize, reduceBlock>>>(d_v, d_v_max, i_max, j_max);
         CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
+
+        double u_max_val_cpu = *d_u_max; // Read into a CPU variable for printing
+        double v_max_val_cpu = *d_v_max;
 
         // Access max values directly from managed memory - no copies needed
         double safe_u_max = fabs(*d_u_max) < 1e-9 ? 1e-9 : fabs(*d_u_max);
@@ -297,8 +302,8 @@ int main(int argc, char* argv[])
 
         // Print progress occasionally
         if (timestep % 100 == 0) {
-            printf("Step %d of %d (%.1f%%), u_max=%.6f, v_max=%.6f\n", timestep, MAX_TIMESTEPS, 
-                (float)timestep/MAX_TIMESTEPS*100.0, *d_u_max, *d_v_max);
+            printf("Step %d of %d (%.1f%%), u_max_read=%.6f, v_max_read=%.6f\n", timestep, MAX_TIMESTEPS, 
+                (float)timestep/MAX_TIMESTEPS*100.0, u_max_val_cpu, v_max_val_cpu);
         }
 
         // Calculate F and G directly on device
