@@ -1,0 +1,33 @@
+Initialized!
+Memory allocated.
+Starting 1000 timesteps simulation...
+Boundary check: problem=1, lid_velocity=1.00
+Top-mid u(i=32,j=65): 2.000000
+Top-left u(i=1,j=65): 2.000000
+Top-right u(i=64,j=65): 2.000000
+After boundary setup (ts=0): Top-mid u=2.000000
+Step 0 of 1000 (0.0%), u_max_read=0.000000, v_max_read=0.000000
+F at center(i=32,j=32): 0.000000e+00
+G at center(i=32,j=32): 0.000000e+00
+RHS at center(i=32,j=32): 0.000000e+00
+RHS near top(i=32,j=63): 0.000000e+00
+SOR it 0: residual=6.01463814e+01
+SOR it 1: residual=3.07322843e+07
+SOR it 2: residual=2.29520226e+19
+SOR it 3: residual=1.00874021e+43
+SOR it 4: residual=1.89818901e+90
+SOR it 5: residual=inf
+SOR it 6: residual=-nan
+SOR it 7: residual=-nan
+SOR it 8: residual=-nan
+SOR it 9: residual=-nan
+SOR completed after 10 iterations. Final residual: -nan
+
+==================== FINAL RESULTS ====================
+Simulation completed: 1000 steps in 0.004495 seconds
+Final time reached: 0.000305
+U-CENTER: 0.000000
+V-CENTER: 0.000000
+P-CENTER: 0.000000
+Average time per step: 0.000004 seconds
+=========================================================
