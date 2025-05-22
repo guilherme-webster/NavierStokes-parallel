@@ -54,7 +54,7 @@ int main(int argc, char* argv[])
     printf("Memory allocated.\n");
     
     // Inicialização dos arrays CUDA
-    initCudaArrays(i_max, j_max);
+    initCudaArrays(p, u, v, res, RHS, i_max, j_max);
     printf("CUDA arrays initialized.\n");
 
     double t = 0;
