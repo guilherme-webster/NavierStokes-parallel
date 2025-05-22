@@ -140,16 +140,88 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     cuda_array_size = (i_max + 2) * (j_max + 2) * sizeof(double);
     DEBUG_INFO("Allocating %zu bytes for each array", cuda_array_size);
     
+    // Verificar se o tamanho calculado não é muito grande
+    size_t free_mem = 0, total_mem = 0;
+    CUDACHECK(cudaMemGetInfo(&free_mem, &total_mem));
+    DEBUG_INFO("GPU Memory - Free: %zu bytes, Total: %zu bytes", free_mem, total_mem);
+    
+    size_t total_needed = 9 * cuda_array_size; // 9 arrays
+    if (total_needed > free_mem) {
+        DEBUG_ERROR("Memória insuficiente na GPU: necessário %zu bytes, disponível %zu bytes", 
+                   total_needed, free_mem);
+        return -1;
+    }
+    
     // Alocar memória unificada
-    CUDACHECK(cudaMallocManaged(&unified_p, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_res, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_RHS, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_u, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_v, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_F, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_G, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_dpdx, cuda_array_size));
-    CUDACHECK(cudaMallocManaged(&unified_dpdy, cuda_array_size));
+    cudaError_t err;
+    
+    err = cudaMallocManaged(&unified_p, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_p: %s", cudaGetErrorString(err));
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_res, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_res: %s", cudaGetErrorString(err));
+        if (unified_p) cudaFree(unified_p);
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_RHS, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_RHS: %s", cudaGetErrorString(err));
+        if (unified_p) cudaFree(unified_p);
+        if (unified_res) cudaFree(unified_res);
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_u, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_u: %s", cudaGetErrorString(err));
+        if (unified_p) cudaFree(unified_p);
+        if (unified_res) cudaFree(unified_res);
+        if (unified_RHS) cudaFree(unified_RHS);
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_v, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_v: %s", cudaGetErrorString(err));
+        if (unified_p) cudaFree(unified_p);
+        if (unified_res) cudaFree(unified_res);
+        if (unified_RHS) cudaFree(unified_RHS);
+        if (unified_u) cudaFree(unified_u);
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_F, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_F: %s", cudaGetErrorString(err));
+        freeCudaArrays(); // Liberar o que já foi alocado
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_G, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_G: %s", cudaGetErrorString(err));
+        freeCudaArrays(); // Liberar o que já foi alocado
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_dpdx, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_dpdx: %s", cudaGetErrorString(err));
+        freeCudaArrays(); // Liberar o que já foi alocado
+        return -1;
+    }
+    
+    err = cudaMallocManaged(&unified_dpdy, cuda_array_size);
+    if (err != cudaSuccess) {
+        DEBUG_ERROR("Falha ao alocar unified_dpdy: %s", cudaGetErrorString(err));
+        freeCudaArrays(); // Liberar o que já foi alocado
+        return -1;
+    }
     
     // Verificar se as alocações foram bem-sucedidas
     if (!CHECK_POINTER(unified_p, cuda_array_size, "unified_p") ||
@@ -162,23 +234,64 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
         !CHECK_POINTER(unified_dpdx, cuda_array_size, "unified_dpdx") ||
         !CHECK_POINTER(unified_dpdy, cuda_array_size, "unified_dpdy")) {
         DEBUG_ERROR("Failed to allocate memory for CUDA arrays");
+        freeCudaArrays();
         return -1;
     }
     
     DEBUG_INFO("Copying data from host arrays to unified memory");
     
-    // Inicializar os arrays com dados da CPU
+    // Inicializar os arrays com dados da CPU - ADICIONAR VERIFICAÇÃO DE PONTEIROS NULOS
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
-            unified_p[i * (j_max + 2) + j] = p[i][j];
-            unified_res[i * (j_max + 2) + j] = res[i][j];
-            unified_RHS[i * (j_max + 2) + j] = RHS[i][j];
-            unified_u[i * (j_max + 2) + j] = u[i][j];
-            unified_v[i * (j_max + 2) + j] = v[i][j];
-            unified_F[i * (j_max + 2) + j] = 0.0;
-            unified_G[i * (j_max + 2) + j] = 0.0;
-            unified_dpdx[i * (j_max + 2) + j] = 0.0;
-            unified_dpdy[i * (j_max + 2) + j] = 0.0;
+            // Verificar se os ponteiros p[i], res[i], etc são válidos
+            if (p[i] == NULL || res[i] == NULL || RHS[i] == NULL) {
+                DEBUG_ERROR("Ponteiro 2D nulo encontrado em i=%d: p=%p, res=%p, RHS=%p", 
+                           i, (void*)p[i], (void*)res[i], (void*)RHS[i]);
+                return -1;
+            }
+            
+            // Verificação especial para u que tem dimensão i_max+1
+            if (i <= i_max && u[i] == NULL) {
+                DEBUG_ERROR("Ponteiro u[%d] é nulo", i);
+                return -1;
+            }
+            
+            // Verificação especial para v que tem dimensão j_max+1
+            if (v[i] == NULL) {
+                DEBUG_ERROR("Ponteiro v[%d] é nulo", i);
+                return -1;
+            }
+            
+            // Verificar se o índice linearizado está dentro dos limites
+            size_t idx = i * (j_max + 2) + j;
+            if (idx >= (i_max + 2) * (j_max + 2)) {
+                DEBUG_ERROR("Índice fora dos limites: i=%d, j=%d, idx=%zu, max=%zu", 
+                           i, j, idx, (i_max + 2) * (j_max + 2) - 1);
+                return -1;
+            }
+            
+            try {
+                unified_p[idx] = p[i][j];
+                unified_res[idx] = res[i][j];
+                unified_RHS[idx] = RHS[i][j];
+                
+                // Verificações especiais para u e v devido às dimensões diferentes
+                if (i <= i_max && j <= j_max + 1) {
+                    unified_u[idx] = u[i][j];
+                }
+                
+                if (i <= i_max + 1 && j <= j_max) {
+                    unified_v[idx] = v[i][j];
+                }
+                
+                unified_F[idx] = 0.0;
+                unified_G[idx] = 0.0;
+                unified_dpdx[idx] = 0.0;
+                unified_dpdy[idx] = 0.0;
+            } catch (...) {
+                DEBUG_ERROR("Exceção durante a cópia de dados em i=%d, j=%d", i, j);
+                return -1;
+            }
         }
     }
     
