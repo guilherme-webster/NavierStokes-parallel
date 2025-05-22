@@ -459,12 +459,6 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         }
         it++;
     }
-    // Copiar resultados de volta para os arrays 2D originais
-    for (int i = 0; i <= i_max + 1; i++) {
-        for (int j = 0; j <= j_max + 1; j++) {
-            p[i][j] = unified_p[i * (j_max + 2) + j];
-        }
-    }
     printf("SOR complete!\n");
     // 4. Atualizar u e v usando kernel update_uv_kernel
     update_uv_kernel<<<grid2D, block2D>>>(unified_u, unified_v, unified_F, unified_G, unified_p, i_max, j_max, delta_t, delta_x, delta_y);
