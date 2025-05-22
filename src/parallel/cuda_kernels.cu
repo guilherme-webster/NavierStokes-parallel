@@ -168,7 +168,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     v_max = *d_vmax;
     CUDACHECK(cudaFree(d_umax));
     CUDACHECK(cudaFree(d_vmax));
-    delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
+    delta_t = tau * n_min(4, 3.0, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
     gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
     // 1. Boundary conditions (GPU)
@@ -210,10 +210,11 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     // (If all arrays are already on GPU, this step can be skipped)
 
     // 5. SOR loop (already uses GPU kernels)
+    dim3 blockSOR(16, 16);
+    dim3 gridSOR((i_max+blockSOR.x-1)/blockSOR.x, (j_max+blockSOR.y-1)/blockSOR.y);
     while (it < max_it) {
         // Atualizar condições de contorno de pressão (ghost cells) na GPU
         // Kernel para copiar bordas (pode ser otimizado, mas aqui faz em CPU para simplicidade)
-        // TODO: Portar para kernel se necessário
         for (int i = 1; i <= i_max; i++) {
             unified_p[i * (j_max + 2) + 0] = unified_p[i * (j_max + 2) + 1];
             unified_p[i * (j_max + 2) + (j_max + 1)] = unified_p[i * (j_max + 2) + j_max];
@@ -224,15 +225,15 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         }
         CUDACHECK(cudaDeviceSynchronize());
         // Red points
-        RedSORKernel<<<gridSize, blockSize>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
+        RedSORKernel<<<gridSOR, blockSOR>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Black points
-        BlackSORKernel<<<gridSize, blockSize>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
+        BlackSORKernel<<<gridSOR, blockSOR>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Calcular resíduos
-        CalculateResidualKernel<<<gridSize, blockSize>>>(unified_p, unified_res, unified_RHS, i_max, j_max, dxdx, dydy);
+        CalculateResidualKernel<<<gridSOR, blockSOR>>>(unified_p, unified_res, unified_RHS, i_max, j_max, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
         // Verificar convergência (CPU reduction)
@@ -395,6 +396,15 @@ __global__ void update_uv_kernel(double* u, double* v, double* F, double* G, dou
     if (i <= i_max && j <= j_max - 1) {
         v[i*(j_max+2)+j] = G[i*(j_max+2)+j] - delta_t * (p[i*(j_max+2)+j+1] - p[i*(j_max+2)+j]) / delta_y;
     }
+}
+
+// Função utilitária para mínimo de até 4 valores double
+__host__ __device__ double n_min(int n, double a, double b, double c, double d) {
+    double minval = a;
+    if (b < minval) minval = b;
+    if (c < minval) minval = c;
+    if (d < minval) minval = d;
+    return minval;
 }
 
 // Exemplo de chamada de kernel para max_mat:
