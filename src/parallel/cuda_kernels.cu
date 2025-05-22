@@ -4,6 +4,15 @@
 #include <math.h>
 #include <stdarg.h>
 
+// Funções utilitárias para CUDA
+#ifdef __CUDACC__
+__device__ unsigned long long int __double_as_longlong(double val) {
+    unsigned long long int ret;
+    memcpy(&ret, &val, sizeof(double));
+    return ret;
+}
+#endif
+
 // Add CUDA error checking
 void check_cuda(cudaError_t error, const char *filename, const int line)
 {
@@ -320,7 +329,20 @@ __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, d
         }
         __syncthreads();
     }
-    if (tid == 0) atomicMax((int*)max_val, __double_as_int(sdata[0]));
+    // Use atomicCAS para atualização atômica em vez de atomicMax com __double_as_int
+    if (tid == 0) {
+        double old_val = *max_val;
+        double my_val = sdata[0];
+        while (my_val > old_val) {
+            double assumed = old_val;
+            old_val = atomicCAS((unsigned long long int*)max_val, 
+                                 __double_as_longlong(old_val),
+                                 __double_as_longlong(my_val));
+            // Se old_val é como assumimos, conseguimos atualizar
+            if (old_val == assumed)
+                break;
+        }
+    }
 }
 
 // Kernel para calcular dp_dx e dp_dy em arrays de saída
