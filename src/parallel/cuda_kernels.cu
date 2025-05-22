@@ -120,7 +120,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     double norm_p = 0.0;
     for (int i = 1; i <= i_max; i++) {
         for(int j = 1; j <= j_max; j++) {
-            norm_p += m[i][j] * m[i][j];
+            norm_p += unified_p[i * (j_max + 2) + j] * unified_p[i * (j_max + 2) + j];
         }
     }
     norm_p = sqrt(norm_p / i_max / j_max);
@@ -241,7 +241,7 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     }
 
     // Corrigir acesso incorreto para os valores centrais
-    printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+    printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
     printf("U-CENTER: %.6f\n", unified_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
     printf("V-CENTER: %.6f\n", unified_v[(i_max/2) * (j_max + 2) + (j_max/2)]);
     printf("P-CENTER: %.6f\n", unified_p[(i_max/2) * (j_max + 2) + (j_max/2)]);
