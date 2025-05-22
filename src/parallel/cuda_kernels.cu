@@ -117,7 +117,13 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     int it = 0;
     double dydy = delta_y * delta_y;
     double dxdx = delta_x * delta_x;
-    double norm_p = L2(p, i_max, j_max);
+    double norm_p = 0.0;
+    for (int i = 1; i <= i_max; i++) {
+        for(int j = 1; j <= j_max; j++) {
+            norm_p += m[i][j] * m[i][j];
+        }
+    }
+    norm_p = sqrt(norm_p / i_max / j_max);
     
 
     u_max = max_mat(i_max, j_max, unified_u);
