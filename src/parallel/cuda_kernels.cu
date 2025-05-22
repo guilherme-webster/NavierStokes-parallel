@@ -62,6 +62,22 @@ bool check_mem_bounds(const void* ptr, size_t size, const char* ptr_name, const 
 #define KERNEL_CHECK(kernel_name) check_kernel_launch(kernel_name, __FILE__, __LINE__)
 #define CHECK_POINTER(ptr, size, name) check_mem_bounds((ptr), (size), (name), __FILE__, __LINE__)
 
+// Definition for n_min
+// Helper function to find the minimum of up to 4 doubles
+double n_min(int n, double a, double b, double c, double d) {
+    double min_val = a; // Start with a
+    if (n >= 2 && b < min_val) {
+        min_val = b;
+    }
+    if (n >= 3 && c < min_val) {
+        min_val = c;
+    }
+    if (n >= 4 && d < min_val) {
+        min_val = d;
+    }
+    return min_val;
+}
+
 // Variáveis globais para arrays device memory (GPU)
 double *device_p = NULL;
 double *device_res = NULL;
