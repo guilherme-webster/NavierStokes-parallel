@@ -22,6 +22,10 @@ double *unified_res = NULL;
 double *unified_RHS = NULL;
 double *unified_u = NULL;
 double *unified_v = NULL;
+double *unified_F = NULL;
+double *unified_G = NULL;
+double *unified_dpdx = NULL;
+double *unified_dpdy = NULL;
 double u_max = 0.0;
 double v_max = 0.0;
 double delta_t, delta_x, delta_y, gamma_factor;  // Alterado de gamma para gamma_factor
@@ -68,7 +72,7 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
 }
 
 // Initialize CUDA arrays once
-int initCudaArrays(int i_max, int j_max) {
+int initCudaArrays(double** p, double** u, double** v, double** res, double** RHS, int i_max, int j_max) {
     // Salvar dimensões da grade
     grid_i_max = i_max;
     grid_j_max = j_max;
@@ -82,12 +86,25 @@ int initCudaArrays(int i_max, int j_max) {
     CUDACHECK(cudaMallocManaged(&unified_RHS, cuda_array_size));
     CUDACHECK(cudaMallocManaged(&unified_u, cuda_array_size));
     CUDACHECK(cudaMallocManaged(&unified_v, cuda_array_size));
-    // Inicializar com zeros
-    CUDACHECK(cudaMemset(unified_p, 0, cuda_array_size));
-    CUDACHECK(cudaMemset(unified_res, 0, cuda_array_size));
-    CUDACHECK(cudaMemset(unified_RHS, 0, cuda_array_size));
-    CUDACHECK(cudaMemset(unified_u, 0, cuda_array_size));
-    CUDACHECK(cudaMemset(unified_v, 0, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_F, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_G, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_dpdx, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_dpdy, cuda_array_size));
+    // Inicializar os arrays com dados da CPU
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            unified_p[i * (j_max + 2) + j] = p[i][j];
+            unified_res[i * (j_max + 2) + j] = res[i][j];
+            unified_RHS[i * (j_max + 2) + j] = RHS[i][j];
+            unified_u[i * (j_max + 2) + j] = u[i][j];
+            unified_v[i * (j_max + 2) + j] = v[i][j];
+            unified_F[i * (j_max + 2) + j] = 0.0;
+            unified_G[i * (j_max + 2) + j] = 0.0;
+            unified_dpdx[i * (j_max + 2) + j] = 0.0;
+            unified_dpdy[i * (j_max + 2) + j] = 0.0;
+        }
+    }
+    
     // Prefetch para GPU
     int device = -1;
     CUDACHECK(cudaGetDevice(&device));
@@ -96,6 +113,12 @@ int initCudaArrays(int i_max, int j_max) {
     CUDACHECK(cudaMemPrefetchAsync(unified_res, cuda_array_size, device, NULL));
     CUDACHECK(cudaMemPrefetchAsync(unified_u, cuda_array_size, device, NULL));
     CUDACHECK(cudaMemPrefetchAsync(unified_v, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_F, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_G, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_dpdx, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_dpdy, cuda_array_size, device, NULL));
+    
+    printf("Initial data copied to GPU memory\n");
     return 0;
 }
 
@@ -106,6 +129,10 @@ void freeCudaArrays() {
     if (unified_RHS) CUDACHECK(cudaFree(unified_RHS));
     if (unified_u) CUDACHECK(cudaFree(unified_u));
     if (unified_v) CUDACHECK(cudaFree(unified_v));
+    if (unified_F) CUDACHECK(cudaFree(unified_F));
+    if (unified_G) CUDACHECK(cudaFree(unified_G));
+    if (unified_dpdx) CUDACHECK(cudaFree(unified_dpdx));
+    if (unified_dpdy) CUDACHECK(cudaFree(unified_dpdy));
     unified_p = NULL;
     unified_res = NULL;
     unified_RHS = NULL;
@@ -126,56 +153,67 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     norm_p = sqrt(norm_p / i_max / j_max);
     
 
-    u_max = max_mat(i_max, j_max, unified_u);
-    v_max = max_mat(i_max, j_max, unified_v);
-    delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), delta_x / fabs(u_max), delta_y / fabs(v_max));
+    // 1. Calcular u_max e v_max usando kernel max_mat_kernel
+    double *d_umax, *d_vmax;
+    CUDACHECK(cudaMallocManaged(&d_umax, sizeof(double)));
+    CUDACHECK(cudaMallocManaged(&d_vmax, sizeof(double)));
+    *d_umax = 0.0;
+    *d_vmax = 0.0;
+    int max_blocks = 32; // Ajuste conforme o tamanho do domínio
+    int max_threads = 256;
+    max_mat_kernel<<<max_blocks, max_threads>>>(unified_u, i_max, j_max, d_umax);
+    max_mat_kernel<<<max_blocks, max_threads>>>(unified_v, i_max, j_max, d_vmax);
+    CUDACHECK(cudaDeviceSynchronize());
+    u_max = *d_umax;
+    v_max = *d_vmax;
+    CUDACHECK(cudaFree(d_umax));
+    CUDACHECK(cudaFree(d_vmax));
+    delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
     gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
+    // 1. Boundary conditions (GPU)
+    dim3 block1D_j((j_max + 127) / 128); // for sides with j_max
+    dim3 block1D_i((i_max + 127) / 128); // for sides with i_max
+    int threads1D = 128;
     if (problem == 1){
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, RIGHT);
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, BOTTOM);
-        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, 1.0, 0.0);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, LEFT);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, RIGHT);
+        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, BOTTOM);
+        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, TOP, 1.0, 0.0);
     }
     else if (problem == 2){
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, RIGHT);
-        set_noslip_linear(i_max, j_max, unified_u, unified_v, BOTTOM);
-        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, sin(f*(*t)), 0.0);           
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, LEFT);
+        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, unified_u, unified_v, RIGHT);
+        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, BOTTOM);
+        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, unified_u, unified_v, TOP, sin(f*(*t)), 0.0);           
     }
     else {
         printf("Unknown problem type (see parameters.txt).\n");
         exit(EXIT_FAILURE);
     }
-
+    CUDACHECK(cudaDeviceSynchronize());
     printf("Conditions set!\n");
 
-    FG_linear(F, G, unified_u, unified_v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
-    
+    // 2. FG calculation (GPU)
+    dim3 block2D(16, 16);
+    dim3 grid2D((i_max+block2D.x-1)/block2D.x, (j_max+block2D.y-1)/block2D.y);
+    FG_linear_kernel<<<grid2D, block2D>>>(unified_u, unified_v, unified_F, unified_G, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
+    CUDACHECK(cudaDeviceSynchronize());
     printf("F, G calculated!\n");
-    for (int i = 1; i <= i_max; i++ ) {
-        for (int j = 1; j <= j_max; j++) {
-            RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
-        }
-    }
+
+    // 3. RHS calculation (GPU)
+    RHS_kernel<<<grid2D, block2D>>>(unified_F, unified_G, unified_RHS, i_max, j_max, delta_t, delta_x, delta_y);
+    CUDACHECK(cudaDeviceSynchronize());
     printf("RHS calculated!\n");
-    // Copiar dados dos arrays 2D para os arrays unificados
-    for (int i = 0; i <= i_max + 1; i++) {
-        for (int j = 0; j <= j_max + 1; j++) {
-            unified_p[i * (j_max + 2) + j] = p[i][j];
-            unified_RHS[i * (j_max + 2) + j] = RHS[i][j];
-            unified_res[i * (j_max + 2) + j] = 0.0;
-        }
-    }
-    
-    // Grid e block dimensions
-    dim3 blockSize(16, 16);
-    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
-                 (j_max + blockSize.y - 1) / blockSize.y);
-    
-    // Executar iterações Red-Black SOR
+
+    // 4. Copy p, RHS, res to unified arrays (GPU, if needed)
+    // (If all arrays are already on GPU, this step can be skipped)
+
+    // 5. SOR loop (already uses GPU kernels)
     while (it < max_it) {
-        // Atualizar condições de contorno
+        // Atualizar condições de contorno de pressão (ghost cells) na GPU
+        // Kernel para copiar bordas (pode ser otimizado, mas aqui faz em CPU para simplicidade)
+        // TODO: Portar para kernel se necessário
         for (int i = 1; i <= i_max; i++) {
             unified_p[i * (j_max + 2) + 0] = unified_p[i * (j_max + 2) + 1];
             unified_p[i * (j_max + 2) + (j_max + 1)] = unified_p[i * (j_max + 2) + j_max];
@@ -184,26 +222,20 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
             unified_p[0 * (j_max + 2) + j] = unified_p[1 * (j_max + 2) + j];
             unified_p[(i_max + 1) * (j_max + 2) + j] = unified_p[i_max * (j_max + 2) + j];
         }
-        
-        // Sincronizar antes de computação
         CUDACHECK(cudaDeviceSynchronize());
-        
         // Red points
         RedSORKernel<<<gridSize, blockSize>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
-        
         // Black points
         BlackSORKernel<<<gridSize, blockSize>>>(unified_p, unified_RHS, i_max, j_max, omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
-        
         // Calcular resíduos
         CalculateResidualKernel<<<gridSize, blockSize>>>(unified_p, unified_res, unified_RHS, i_max, j_max, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
-        
-        // Verificar convergência
+        // Verificar convergência (CPU reduction)
         double res_norm = 0.0;
         for (int i = 1; i <= i_max; i++) {
             for (int j = 1; j <= j_max; j++) {
@@ -211,35 +243,22 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
             }
         }
         res_norm = sqrt(res_norm / (i_max * j_max));
-        
         if (res_norm <= eps * (norm_p + 0.01)) {
             break; // Convergência atingida
         }
-        
         it++;
     }
-    
     // Copiar resultados de volta para os arrays 2D originais
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             p[i][j] = unified_p[i * (j_max + 2) + j];
         }
     }
-
     printf("SOR complete!\n");
-    for(int i = 1; i <= i_max; i++ ) {
-        for (int j = 1; j <= j_max; j++) {
-            if (i <= i_max - 1) {
-                // Acesso correto ao array 1D linearizado
-                unified_u[i * (j_max + 2) + j] = F[i][j] - delta_t * dp_dx(unified_p, i, j,j_max, delta_x);
-            }
-            if (j <= j_max - 1) {
-                // Acesso correto ao array 1D linearizado
-                unified_v[i * (j_max + 2) + j] = G[i][j] - delta_t * dp_dy(unified_p, i, j, j_max, delta_y);
-            }
-        }
-    }
-
+    // 4. Atualizar u e v usando kernel update_uv_kernel
+    update_uv_kernel<<<grid2D, block2D>>>(unified_u, unified_v, unified_F, unified_G, unified_p, i_max, j_max, delta_t, delta_x, delta_y);
+    CUDACHECK(cudaDeviceSynchronize());
+    // Não há mais cudaMalloc/cudaFree aqui!
     // Corrigir acesso incorreto para os valores centrais
     printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
     printf("U-CENTER: %.6f\n", unified_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
@@ -252,180 +271,139 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
 }
 
 
-double max_mat(int i_max, int j_max, double* mat) {
-    double max_val = 0.0;
-    for (int i = 1; i <= i_max; i++) {
-        for (int j = 1; j <= j_max; j++) {
-            if (fabs(mat[i * (j_max + 2) + j]) > max_val) {
-                max_val = fabs(mat[i * (j_max + 2) + j]);
-            }
+// Kernel para encontrar o valor máximo absoluto em uma matriz linearizada
+template <typename T>
+__global__ void max_mat_kernel(const T* mat, int i_max, int j_max, T* max_val) {
+    __shared__ T sdata[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = (i_max) * (j_max);
+    T local_max = 0.0;
+    for (int k = idx; k < total; k += blockDim.x * gridDim.x) {
+        int i = 1 + k / j_max;
+        int j = 1 + k % j_max;
+        T val = fabs(mat[i * (j_max + 2) + j]);
+        if (val > local_max) local_max = val;
+    }
+    sdata[tid] = local_max;
+    __syncthreads();
+    // Redução em bloco
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            if (sdata[tid + s] > sdata[tid]) sdata[tid] = sdata[tid + s];
         }
+        __syncthreads();
     }
-    return max_val;
+    if (tid == 0) atomicMax((int*)max_val, __double_as_int(sdata[0]));
 }
 
-double n_min (int count, ...) {
-    va_list args;
-    va_start(args, count);
-    
-    double min_val = va_arg(args, double);
-    
-    for (int i = 1; i < count; i++) {
-        double val = va_arg(args, double);
-        if (val < min_val) {
-            min_val = val;
-        }
-    }
-    
-    va_end(args);
-    return min_val;
-}
-double dp_dx(double* p, int i, int j, int j_max, double delta_x) {
-    return (p[i * (j_max + 2) + j+1] - p[i * (j_max + 2) + j]) / delta_x;
-}
-
-double dp_dy(double* p, int i, int j, int j_max, double delta_y) {
-    return (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_y;
-}
-// Adicione novas funções que lidam com arrays linearizados
-int set_noslip_linear(int i_max, int j_max, double* u, double* v, int side) {
-    return set_inflow_linear(i_max, j_max, u, v, side, 0.0, 0.0);
-}
-
-int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix) {
-    int i, j;
-    switch(side) {
-        case TOP:            
-            for (i = 1; i <= i_max; i++) {
-                v[i * (j_max + 2) + j_max] = v_fix; // Set fixed values on border
-                u[i * (j_max + 2) + (j_max + 1)] = 2 * u_fix - u[i * (j_max + 2) + j_max]; // Set values by averaging
-            }
-            break;
-        case BOTTOM:           
-            for (i = 1; i <= i_max; i++) {
-                v[i * (j_max + 2) + 0] = v_fix;
-                u[i * (j_max + 2) + 0] = 2 * u_fix - u[i * (j_max + 2) + 1];
-            }
-            break;
-        case LEFT:        
-            for (j = 1; j <= j_max; j++) {
-                u[0 * (j_max + 2) + j] = u_fix;
-                v[0 * (j_max + 2) + j] = 2 * v_fix - v[1 * (j_max + 2) + j];
-            }
-            break;
-        case RIGHT:            
-            for (j = 1; j <= j_max; j++) {
-                u[i_max * (j_max + 2) + j] = u_fix;
-                v[(i_max+1) * (j_max + 2) + j] = 2 * v_fix - v[i_max * (j_max + 2) + j];
-            }
-            break;
-        default: 
-            return -1;
-    }
-
-    return 0;
-}
-
-
-// Implementação unificada de FG que trabalha diretamente com arrays lineares
-void FG_linear(double** F, double** G, double* u, double* v, int i_max, int j_max, 
-       double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
-    
-    // Calcular F e G diretamente acessando os arrays linearizados
-    for (int i = 1; i <= i_max; i++) {
-        for (int j = 1; j <= j_max; j++) {
-            // Calcular F em (i,j)
-            if (i <= i_max-1) {
-                // Termo convectivo em x (donor-cell)
-                double du2_dx = 0.0;
-                if (u[i * (j_max + 2) + j] > 0) {
-                    du2_dx = ((u[i * (j_max + 2) + j] * u[i * (j_max + 2) + j] - 
-                              u[(i-1) * (j_max + 2) + j] * u[(i-1) * (j_max + 2) + j]) / delta_x) *
-                             (1 - gamma) + 
-                             (u[i * (j_max + 2) + j] * (u[i * (j_max + 2) + j] - u[(i-1) * (j_max + 2) + j]) / delta_x) *
-                             gamma;
-                } else {
-                    du2_dx = ((u[(i+1) * (j_max + 2) + j] * u[(i+1) * (j_max + 2) + j] - 
-                              u[i * (j_max + 2) + j] * u[i * (j_max + 2) + j]) / delta_x) *
-                             (1 - gamma) + 
-                             (u[i * (j_max + 2) + j] * (u[(i+1) * (j_max + 2) + j] - u[i * (j_max + 2) + j]) / delta_x) *
-                             gamma;
-                }
-                
-                // Termo convectivo em y
-                double duv_dy = 0.0;
-                if ((v[(i) * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0 > 0) {
-                    duv_dy = ((v[i * (j_max + 2) + j] * u[i * (j_max + 2) + j] - 
-                              v[i * (j_max + 2) + (j-1)] * u[i * (j_max + 2) + (j-1)]) / delta_y) *
-                             (1 - gamma) + 
-                             ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0) * 
-                             (u[i * (j_max + 2) + j] - u[i * (j_max + 2) + (j-1)]) / delta_y * 
-                             gamma;
-                } else {
-                    duv_dy = ((v[i * (j_max + 2) + (j+1)] * u[i * (j_max + 2) + (j+1)] - 
-                              v[i * (j_max + 2) + j] * u[i * (j_max + 2) + j]) / delta_y) *
-                             (1 - gamma) + 
-                             ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0) * 
-                             (u[i * (j_max + 2) + (j+1)] - u[i * (j_max + 2) + j]) / delta_y * 
-                             gamma;
-                }
-                
-                // Termos difusivos
-                double d2u_dx2 = (u[(i+1) * (j_max + 2) + j] - 2.0 * u[i * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
-                double d2u_dy2 = (u[i * (j_max + 2) + (j+1)] - 2.0 * u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
-                
-                // F[i][j] no formato 2D normal
-                F[i][j] = u[i * (j_max + 2) + j] + delta_t * (
-                              1.0/Re * (d2u_dx2 + d2u_dy2) - du2_dx - duv_dy + g_x
-                          );
-            }
-            
-            // Calcular G em (i,j)
-            if (j <= j_max-1) {
-                // Implementação similar para G
-                // Termo convectivo em x
-                double duv_dx = 0.0;
-                if ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0 > 0) {
-                    duv_dx = ((u[i * (j_max + 2) + j] * v[i * (j_max + 2) + j] - 
-                              u[(i-1) * (j_max + 2) + j] * v[(i-1) * (j_max + 2) + j]) / delta_x) *
-                             (1 - gamma) + 
-                             ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0) * 
-                             (v[i * (j_max + 2) + j] - v[(i-1) * (j_max + 2) + j]) / delta_x * 
-                             gamma;
-                } else {
-                    duv_dx = ((u[(i+1) * (j_max + 2) + j] * v[(i+1) * (j_max + 2) + j] - 
-                              u[i * (j_max + 2) + j] * v[i * (j_max + 2) + j]) / delta_x) *
-                             (1 - gamma) + 
-                             ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0) * 
-                             (v[(i+1) * (j_max + 2) + j] - v[i * (j_max + 2) + j]) / delta_x * 
-                             gamma;
-                }
-                
-                // Termo convectivo em y
-                double dv2_dy = 0.0;
-                if (v[i * (j_max + 2) + j] > 0) {
-                    dv2_dy = ((v[i * (j_max + 2) + j] * v[i * (j_max + 2) + j] - 
-                              v[i * (j_max + 2) + (j-1)] * v[i * (j_max + 2) + (j-1)]) / delta_y) *
-                             (1 - gamma) + 
-                             (v[i * (j_max + 2) + j] * (v[i * (j_max + 2) + j] - v[i * (j_max + 2) + (j-1)]) / delta_y) *
-                             gamma;
-                } else {
-                    dv2_dy = ((v[i * (j_max + 2) + (j+1)] * v[i * (j_max + 2) + (j+1)] - 
-                              v[i * (j_max + 2) + j] * v[i * (j_max + 2) + j]) / delta_y) *
-                             (1 - gamma) + 
-                             (v[i * (j_max + 2) + j] * (v[i * (j_max + 2) + (j+1)] - v[i * (j_max + 2) + j]) / delta_y) *
-                             gamma;
-                }
-                
-                // Termos difusivos
-                double d2v_dx2 = (v[(i+1) * (j_max + 2) + j] - 2.0 * v[i * (j_max + 2) + j] + v[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
-                double d2v_dy2 = (v[i * (j_max + 2) + (j+1)] - 2.0 * v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
-                
-                // G[i][j] no formato 2D normal
-                G[i][j] = v[i * (j_max + 2) + j] + delta_t * (
-                              1.0/Re * (d2v_dx2 + d2v_dy2) - duv_dx - dv2_dy + g_y
-                          );
-            }
-        }
+// Kernel para calcular dp_dx e dp_dy em arrays de saída
+__global__ void dp_dx_kernel(const double* p, double* out, int i_max, int j_max, double delta_x) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    if (i <= i_max && j <= j_max) {
+        out[i * (j_max + 2) + j] = (p[i * (j_max + 2) + j+1] - p[i * (j_max + 2) + j]) / delta_x;
     }
 }
+__global__ void dp_dy_kernel(const double* p, double* out, int i_max, int j_max, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    if (i <= i_max && j <= j_max) {
+        out[i * (j_max + 2) + j] = (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_y;
+    }
+}
+
+// Kernel para set_noslip_linear
+__global__ void set_noslip_linear_kernel(int i_max, int j_max, double* u, double* v, int side) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    if (side == LEFT && idx <= j_max) {
+        u[0 * (j_max + 2) + idx] = 0.0;
+        v[0 * (j_max + 2) + idx] = -v[1 * (j_max + 2) + idx];
+    } else if (side == RIGHT && idx <= j_max) {
+        u[i_max * (j_max + 2) + idx] = 0.0;
+        v[(i_max+1) * (j_max + 2) + idx] = -v[i_max * (j_max + 2) + idx];
+    } else if (side == TOP && idx <= i_max) {
+        u[idx * (j_max + 2) + j_max+1] = -u[idx * (j_max + 2) + j_max];
+        v[idx * (j_max + 2) + j_max] = 0.0;
+    } else if (side == BOTTOM && idx <= i_max) {
+        u[idx * (j_max + 2) + 0] = -u[idx * (j_max + 2) + 1];
+        v[idx * (j_max + 2) + 0] = 0.0;
+    }
+}
+
+// Kernel para set_inflow_linear
+__global__ void set_inflow_linear_kernel(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    if (side == TOP && idx <= i_max) {
+        u[idx * (j_max + 2) + j_max+1] = 2 * u_fix - u[idx * (j_max + 2) + j_max];
+        v[idx * (j_max + 2) + j_max] = v_fix;
+    } else if (side == BOTTOM && idx <= i_max) {
+        u[idx * (j_max + 2) + 0] = 2 * u_fix - u[idx * (j_max + 2) + 1];
+        v[idx * (j_max + 2) + 0] = v_fix;
+    } else if (side == LEFT && idx <= j_max) {
+        u[0 * (j_max + 2) + idx] = u_fix;
+        v[0 * (j_max + 2) + idx] = 2 * v_fix - v[1 * (j_max + 2) + idx];
+    } else if (side == RIGHT && idx <= j_max) {
+        u[i_max * (j_max + 2) + idx] = u_fix;
+        v[(i_max+1) * (j_max + 2) + idx] = 2 * v_fix - v[i_max * (j_max + 2) + idx];
+    }
+}
+
+// Kernel para calcular F e G (Navier-Stokes)
+__global__ void FG_linear_kernel(double* u, double* v, double* F, double* G, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma_factor) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    if (i <= i_max - 1 && j <= j_max) {
+        // F (u preditor)
+        double du2dx = ((u[(i+1)*(j_max+2)+j] + u[i*(j_max+2)+j])*(u[(i+1)*(j_max+2)+j] + u[i*(j_max+2)+j])
+                        - (u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j])*(u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j])) / (4.0*delta_x);
+        double duvdy = ((v[i*(j_max+2)+j] + v[(i+1)*(j_max+2)+j])*(u[i*(j_max+2)+j+1] + u[i*(j_max+2)+j])
+                        - (v[i*(j_max+2)+j-1] + v[(i+1)*(j_max+2)+j-1])*(u[i*(j_max+2)+j] + u[i*(j_max+2)+j-1])) / (4.0*delta_y);
+        double laplu = (u[(i+1)*(j_max+2)+j] - 2.0*u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j]) / (delta_x*delta_x)
+                        + (u[i*(j_max+2)+j+1] - 2.0*u[i*(j_max+2)+j] + u[i*(j_max+2)+j-1]) / (delta_y*delta_y);
+        F[i*(j_max+2)+j] = u[i*(j_max+2)+j] + delta_t * ((laplu/Re) - du2dx - duvdy + g_x);
+    }
+    if (i <= i_max && j <= j_max - 1) {
+        // G (v preditor)
+        double dv2dy = ((v[i*(j_max+2)+j+1] + v[i*(j_max+2)+j])*(v[i*(j_max+2)+j+1] + v[i*(j_max+2)+j])
+                        - (v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1])*(v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1])) / (4.0*delta_y);
+        double duvdx = ((u[i*(j_max+2)+j] + u[i*(j_max+2)+j+1])*(v[(i+1)*(j_max+2)+j] + v[i*(j_max+2)+j])
+                        - (u[(i-1)*(j_max+2)+j] + u[(i-1)*(j_max+2)+j+1])*(v[i*(j_max+2)+j] + v[(i-1)*(j_max+2)+j])) / (4.0*delta_x);
+        double laplv = (v[(i+1)*(j_max+2)+j] - 2.0*v[i*(j_max+2)+j] + v[(i-1)*(j_max+2)+j]) / (delta_x*delta_x)
+                        + (v[i*(j_max+2)+j+1] - 2.0*v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1]) / (delta_y*delta_y);
+        G[i*(j_max+2)+j] = v[i*(j_max+2)+j] + delta_t * ((laplv/Re) - dv2dy - duvdx + g_y);
+    }
+}
+
+// Kernel para calcular RHS
+__global__ void RHS_kernel(double* F, double* G, double* RHS, int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    if (i <= i_max && j <= j_max) {
+        RHS[i*(j_max+2)+j] = ((F[i*(j_max+2)+j] - F[(i-1)*(j_max+2)+j]) / delta_x
+                            + (G[i*(j_max+2)+j] - G[i*(j_max+2)+j-1]) / delta_y) / delta_t;
+    }
+}
+
+// Kernel para atualizar u e v após SOR
+__global__ void update_uv_kernel(double* u, double* v, double* F, double* G, double* p, int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    if (i <= i_max - 1 && j <= j_max) {
+        u[i*(j_max+2)+j] = F[i*(j_max+2)+j] - delta_t * (p[(i+1)*(j_max+2)+j] - p[i*(j_max+2)+j]) / delta_x;
+    }
+    if (i <= i_max && j <= j_max - 1) {
+        v[i*(j_max+2)+j] = G[i*(j_max+2)+j] - delta_t * (p[i*(j_max+2)+j+1] - p[i*(j_max+2)+j]) / delta_y;
+    }
+}
+
+// Exemplo de chamada de kernel para max_mat:
+// double* d_max;
+// cudaMallocManaged(&d_max, sizeof(double));
+// *d_max = 0.0;
+// max_mat_kernel<<<numBlocks, blockSize>>>(unified_u, i_max, j_max, d_max);
+// cudaDeviceSynchronize();
+// double max_val = *d_max;
+// cudaFree(d_max);
+//
+// Para os outros kernels, use grid/block adequados conforme o tamanho do domínio.
