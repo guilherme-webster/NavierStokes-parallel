@@ -20,7 +20,7 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 // Kernel to calculate F values (intermediate velocity in x-direction)
 __global__ void CalculateFKernel(double* u, double* v, double* F, 
                                 int i_max, int j_max, double Re, double g_x,
-                                double delta_t, double delta_x, double delta_y) {
+                                double delta_t, double delta_x, double delta_y, double gamma) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
@@ -29,8 +29,8 @@ __global__ void CalculateFKernel(double* u, double* v, double* F,
     if (i >= 1 && i <= i_max-1 && j >= 1 && j <= j_max) {
         int idx = i * (j_max + 2) + j;
         
-        // Use donor-cell scheme like the serial version with dynamically calculated gamma
-        double gamma = 0.9; // Default value, should be set by caller for consistency with serial code
+        // Use donor-cell scheme like the serial version with gamma provided by caller
+        // This matches the serial implementation
         
         // du²/dx with donor-cell scheme - following serial implementation pattern
         double du2_dx = 0.0;
@@ -66,7 +66,7 @@ __global__ void CalculateFKernel(double* u, double* v, double* F,
 // Kernel to calculate G values (intermediate velocity in y-direction)
 __global__ void CalculateGKernel(double* u, double* v, double* G, 
                                 int i_max, int j_max, double Re, double g_y,
-                                double delta_t, double delta_x, double delta_y) {
+                                double delta_t, double delta_x, double delta_y, double gamma) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
@@ -75,8 +75,8 @@ __global__ void CalculateGKernel(double* u, double* v, double* G,
     if (i >= 1 && i <= i_max && j >= 1 && j <= j_max-1) {
         int idx = i * (j_max + 2) + j;
         
-        // Use donor-cell scheme like the serial version with dynamically calculated gamma
-        double gamma = 0.9; // Default value, should be set by caller for consistency with serial code
+        // Use donor-cell scheme like the serial version with gamma provided by caller
+        // This matches the serial implementation
         
         // duv/dx with donor-cell scheme - corrected to match serial version
         double duv_dx = 0.0;
@@ -304,14 +304,16 @@ __global__ void UpdateVelocityKernel(double* u, double* v, double* F, double* G,
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    // Match the serial code's update bounds: u is calculated up to i_max-1
-    if (i >= 1 && i <= i_max-1 && j >= 1 && j <= j_max) {
-        u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
-    }
-    
-    // Match the serial code's update bounds: v is calculated up to j_max-1
-    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max-1) {
-        v[i * (j_max + 2) + j] = G[i * (j_max + 2) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
+        // Match the serial code's update bounds: u is calculated up to i_max-1
+        if (i <= i_max - 1) {
+            u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
+        }
+        
+        // Match the serial code's update bounds: v is calculated up to j_max-1
+        if (j <= j_max - 1) {
+            v[i * (j_max + 2) + j] = G[i * (j_max + 2) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+        }
     }
 }
 
@@ -459,26 +461,30 @@ __global__ void setBoundaryFGKernel(double* F, double* G, int i_max, int j_max) 
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     
     // F boundary conditions 
-    // F is not calculated at i=0 and i=i_max in the serial code
-    // In serial: F is only computed for i=1 to i_max-1
+    // In serial code, F is only computed for i=1 to i_max-1
+    // Set F values at boundaries based on the no-slip condition
     if (j >= 1 && j <= j_max) {
         if (i == 0) {
-            F[i * (j_max + 2) + j] = 0.0; // Left boundary, F=0 at left boundary
+            // Left boundary - set F=0 (no-slip)
+            F[i * (j_max + 2) + j] = 0.0;
         }
         if (i == i_max) {
-            F[i * (j_max + 2) + j] = 0.0; // Right boundary, F=0 at right boundary
+            // Right boundary - set F=0 (no-slip)
+            F[i * (j_max + 2) + j] = 0.0;
         }
     }
     
-    // G boundary conditions 
-    // G is not calculated at j=0 and j=j_max in the serial code
-    // In serial: G is only computed for j=1 to j_max-1
+    // G boundary conditions
+    // In serial code, G is only computed for j=1 to j_max-1
+    // Set G values at boundaries based on the no-slip condition
     if (i >= 1 && i <= i_max) {
         if (j == 0) {
-            G[i * (j_max + 2) + j] = 0.0; // Bottom boundary, G=0 at bottom
+            // Bottom boundary - set G=0 (no-slip)
+            G[i * (j_max + 2) + j] = 0.0;
         }
         if (j == j_max) {
-            G[i * (j_max + 2) + j] = 0.0; // Top boundary, G=0 at top (including for lid)
+            // Top boundary - set G=0 (no-slip or lid driven)
+            G[i * (j_max + 2) + j] = 0.0;
         }
     }
 }

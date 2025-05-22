@@ -296,29 +296,28 @@ int main(int argc, char* argv[])
         // Access max values directly from managed memory - no copies needed
         double safe_u_max = fabs(*d_u_max) < 1e-9 ? 1e-9 : fabs(*d_u_max);
         double safe_v_max = fabs(*d_v_max) < 1e-9 ? 1e-9 : fabs(*d_v_max);
-        double delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), // Corrected denominator grouping
+        delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), // Corrected denominator grouping
                             delta_x / safe_u_max, delta_y / safe_v_max);
-        gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
+        
+        // Calculate gamma for Donor-Cell scheme - used in both F and G calculations
+        // This matches the serial implementation's calculation of gamma
+        gamma = fmax(fabs(*d_u_max) * delta_t / delta_x, fabs(*d_v_max) * delta_t / delta_y);
 
         // Print progress occasionally
         if (timestep % 100 == 0) {
-            printf("Step %d of %d (%.1f%%), u_max_read=%.6f, v_max_read=%.6f\n", timestep, MAX_TIMESTEPS, 
-                (float)timestep/MAX_TIMESTEPS*100.0, u_max_val_cpu, v_max_val_cpu);
+            printf("Step %d of %d (%.1f%%), u_max_read=%.6f, v_max_read=%.6f, gamma=%.6f\n", timestep, MAX_TIMESTEPS, 
+                (float)timestep/MAX_TIMESTEPS*100.0, u_max_val_cpu, v_max_val_cpu, gamma);
         }
-
-        // Calculate gamma for Donor-Cell scheme - used in both F and G calculations
-        // This matches the serial implementation's calculation of gamma
-        double gamma = fmax(*d_u_max * delta_t / delta_x, *d_v_max * delta_t / delta_y);
         
         // Calculate F and G directly on device using separate kernels
-        // TODO: Pass gamma to kernels using a kernel parameter or constant memory
+        // Pass gamma to kernels to match serial implementation
         CalculateFKernel<<<gridSize, blockSize>>>(
-            d_u, d_v, d_F, i_max, j_max, Re, g_x, delta_t, delta_x, delta_y);
+            d_u, d_v, d_F, i_max, j_max, Re, g_x, delta_t, delta_x, delta_y, gamma);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
 
         CalculateGKernel<<<gridSize, blockSize>>>(
-            d_u, d_v, d_G, i_max, j_max, Re, g_y, delta_t, delta_x, delta_y);
+            d_u, d_v, d_G, i_max, j_max, Re, g_y, delta_t, delta_x, delta_y, gamma);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
 
@@ -363,26 +362,37 @@ int main(int argc, char* argv[])
     CUDACHECK(cudaGetLastError());
     CUDACHECK(cudaDeviceSynchronize());
 
-    // Use a more conservative omega value for the first few iterations
-    double current_omega = omega;
-    if (timestep < 5) current_omega = 1.0; // Use Gauss-Seidel for stability initially
-
-    while (it < min_iterations || (it < max_it && residual > epsilon)) {
+    // Initialize p to zeros for the first iteration or a conservative approach
+    if (timestep == 0) {
+        // Initialize pressure matrix to zeros for the first iteration
+        CUDACHECK(cudaMemset(d_p, 0, size));
+    }
+    
+    // Use a more conservative omega value, especially for early iterations
+    double current_omega = 1.0; // Start with Gauss-Seidel for stability
+    if (timestep > 10) current_omega = omega; // Gradually increase to specified omega
+    
+    // Set a maximum number of iterations and a stable initial residual
+    int max_safe_it = 500;  // Don't let SOR run too long
+    double prev_residual = INFINITY;
+    
+    while (it < min_iterations || (it < max_safe_it && residual > epsilon && residual < 1e6)) {
+        // Update boundary conditions before SOR iteration
         UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
         CUDACHECK(cudaGetLastError());
 
-        // Use a more conservative omega for stability
+        // Red-Black SOR with conservative omega
         RedSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, current_omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
-
+        
         UpdateBoundaryKernel<<<boundaryGridSize, blockSize>>>(d_p, i_max, j_max);
         CUDACHECK(cudaGetLastError());
 
         BlackSORKernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, current_omega, dxdx, dydy);
         CUDACHECK(cudaGetLastError());
         
-        // Calculate residual every iteration for early timesteps
-        if (timestep < 5 || it % 10 == 0) {
+        // Calculate residual periodically to check convergence
+        if (it % 5 == 0 || it < 10) {
             CalculateResidualKernel<<<gridSize, blockSize>>>(d_p, d_res, d_RHS, i_max, j_max, dxdx, dydy);
             CUDACHECK(cudaGetLastError());
 
@@ -391,10 +401,16 @@ int main(int argc, char* argv[])
             CUDACHECK(cudaGetLastError());
             CUDACHECK(cudaDeviceSynchronize());
             
+            prev_residual = residual;
             residual = sqrt(*d_sum / (i_max * j_max));
             
-            if (timestep < 2 && (it < 10 || it % 50 == 0)) {
-                printf("SOR it %d: residual=%.8e\n", it, residual);
+            // Exit early if residual starts growing significantly
+            if (residual > prev_residual * 2.0 && it > 10) {
+                break;
+            }
+            
+            if (timestep < 2 && (it < 10 || it % 25 == 0)) {
+                printf("SOR it %d: residual=%.8e, omega=%.3f\n", it, residual, current_omega);
             }
         }
         

@@ -6,11 +6,11 @@
 // Declare CUDA kernels
 __global__ void CalculateFKernel(double* u, double* v, double* F, 
                                 int i_max, int j_max, double Re, double g_x,
-                                double delta_t, double delta_x, double delta_y);
+                                double delta_t, double delta_x, double delta_y, double gamma);
 
 __global__ void CalculateGKernel(double* u, double* v, double* G, 
                                 int i_max, int j_max, double Re, double g_y,
-                                double delta_t, double delta_x, double delta_y);
+                                double delta_t, double delta_x, double delta_y, double gamma);
 
 __global__ void CalculateRHSKernel(double* F, double* G, double* RHS, 
                                int i_max, int j_max, 
