@@ -20,6 +20,11 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 double *unified_p = NULL;
 double *unified_res = NULL;
 double *unified_RHS = NULL;
+double *unified_u = NULL;
+double *unified_v = NULL;
+double u_max = 0.0;
+double v_max = 0.0;
+double delta_t, delta_x, delta_y, gamma;
 size_t cuda_array_size = 0;
 int grid_i_max = 0;
 int grid_j_max = 0;
@@ -50,7 +55,8 @@ __global__ void BlackSORKernel(double* p, double* RHS, int i_max, int j_max, dou
     }
 }
 
-__global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int i_max, int j_max, double dxdx, double dydy) {
+__global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int i_max, int j_max, double dxdx, double dydy)
+{
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
 
@@ -58,6 +64,7 @@ __global__ void CalculateResidualKernel(double* p, double* res, double* RHS, int
         res[i * (j_max + 2) + j] = (p[(i + 1) * (j_max + 2) + j] - 2.0 * p[i * (j_max + 2) + j] + p[(i - 1) * (j_max + 2) + j]) / dxdx + 
             (p[i * (j_max + 2) + (j + 1)] - 2.0 * p[i * (j_max + 2) + j] + p[i * (j_max + 2) + (j - 1)]) / dydy - RHS[i * (j_max + 2) + j];
     }
+    
 }
 
 // Initialize CUDA arrays once
@@ -73,19 +80,22 @@ int initCudaArrays(int i_max, int j_max) {
     CUDACHECK(cudaMallocManaged(&unified_p, cuda_array_size));
     CUDACHECK(cudaMallocManaged(&unified_res, cuda_array_size));
     CUDACHECK(cudaMallocManaged(&unified_RHS, cuda_array_size));
-    
+    CUDACHECK(cudaMallocManaged(&unified_u, cuda_array_size));
+    CUDACHECK(cudaMallocManaged(&unified_v, cuda_array_size));
     // Inicializar com zeros
     CUDACHECK(cudaMemset(unified_p, 0, cuda_array_size));
     CUDACHECK(cudaMemset(unified_res, 0, cuda_array_size));
     CUDACHECK(cudaMemset(unified_RHS, 0, cuda_array_size));
-    
+    CUDACHECK(cudaMemset(unified_u, 0, cuda_array_size));
+    CUDACHECK(cudaMemset(unified_v, 0, cuda_array_size));
     // Prefetch para GPU
     int device = -1;
     CUDACHECK(cudaGetDevice(&device));
     CUDACHECK(cudaMemPrefetchAsync(unified_p, cuda_array_size, device, NULL));
     CUDACHECK(cudaMemPrefetchAsync(unified_RHS, cuda_array_size, device, NULL));
     CUDACHECK(cudaMemPrefetchAsync(unified_res, cuda_array_size, device, NULL));
-    
+    CUDACHECK(cudaMemPrefetchAsync(unified_u, cuda_array_size, device, NULL));
+    CUDACHECK(cudaMemPrefetchAsync(unified_v, cuda_array_size, device, NULL));
     return 0;
 }
 
@@ -94,19 +104,55 @@ void freeCudaArrays() {
     if (unified_p) CUDACHECK(cudaFree(unified_p));
     if (unified_res) CUDACHECK(cudaFree(unified_res));
     if (unified_RHS) CUDACHECK(cudaFree(unified_RHS));
-    
+    if (unified_u) CUDACHECK(cudaFree(unified_u));
+    if (unified_v) CUDACHECK(cudaFree(unified_v));
     unified_p = NULL;
     unified_res = NULL;
     unified_RHS = NULL;
 }
 
-int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y, 
-            double** res, double** RHS, double omega, double eps, int max_it) {
+int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta_x, double delta_y, 
+            double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
+            int problem, double f, double* t, int* n_out) {
     int it = 0;
     double dydy = delta_y * delta_y;
     double dxdx = delta_x * delta_x;
     double norm_p = L2(p, i_max, j_max);
     
+
+    u_max = max_mat(i_max, j_max, unified_u);
+    v_max = max_mat(i_max, j_max, unified_v);
+    delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), delta_x / fabs(u_max), delta_y / fabs(v_max));
+    gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
+    
+    if (problem == 1){
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, RIGHT);
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, BOTTOM);
+        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, 1.0, 0.0);
+    }
+    else if (problem == 2){
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, LEFT);
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, RIGHT);
+        set_noslip_linear(i_max, j_max, unified_u, unified_v, BOTTOM);
+        set_inflow_linear(i_max, j_max, unified_u, unified_v, TOP, sin(f*t), 0.0);           
+    }
+    else {
+        printf("Unknown problem type (see parameters.txt).\n");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Conditions set!\n");
+
+    FG(F, G, unified_u, unified_v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
+    
+    printf("F, G calculated!\n");
+    for (int i = 1; i <= i_max; i++ ) {
+        for (int j = 1; j <= j_max; j++) {
+            RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
+        }
+    }
+    printf("RHS calculated!\n");
     // Copiar dados dos arrays 2D para os arrays unificados
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
@@ -173,6 +219,133 @@ int cudaSOR(double** p, int i_max, int j_max, double delta_x, double delta_y,
             p[i][j] = unified_p[i * (j_max + 2) + j];
         }
     }
-    
+
+    printf("SOR complete!\n");
+    for(int i = 1; i <= i_max; i++ ) {
+        for (int j = 1; j <= j_max; j++) {
+            if (i <= i_max - 1) {
+                // Acesso correto ao array 1D linearizado
+                unified_u[i * (j_max + 2) + j] = F[i][j] - delta_t * dp_dx(unified_p, i, j, delta_x);
+            }
+            if (j <= j_max - 1) {
+                // Acesso correto ao array 1D linearizado
+                unified_v[i * (j_max + 2) + j] = G[i][j] - delta_t * dp_dy(unified_p, i, j, delta_y);
+            }
+        }
+    }
+
+    // Corrigir acesso incorreto para os valores centrais
+    printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+    printf("U-CENTER: %.6f\n", unified_u[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("V-CENTER: %.6f\n", unified_v[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    printf("P-CENTER: %.6f\n", unified_p[(i_max/2) * (j_max + 2) + (j_max/2)]);
+    (*n_out)++;  // Incrementa o valor apontado pelo ponteiro
+    *t += delta_t;  // Atualiza o tempo
+
     return (it < max_it) ? 0 : -1;
+}
+
+
+double max_mat(double* mat, int i_max, int j_max) {
+    double max_val = 0.0;
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            if (mat[i * (j_max + 2) + j] > max_val) {
+                max_val = mat[i * (j_max + 2) + j];
+            }
+        }
+    }
+    return max_val;
+}
+
+double n_min (int count, double* vals) {
+    double min_val = vals[0];
+    for (int i = 1; i < count; i++) {
+        if (vals[i] < min_val) {
+            min_val = vals[i];
+        }
+    }
+    return min_val;
+}
+double dp_dx(double* p, int i, int j, double delta_x) {
+    return (p[(i + 1) * (grid_j_max + 2) + j] - p[i * (grid_j_max + 2) + j]) / delta_x;
+}
+double dp_dy(double* p, int i, int j, double delta_y) {
+    return (p[i * (grid_j_max + 2) + (j + 1)] - p[i * (grid_j_max + 2) + j]) / delta_y;
+}
+int set_noslip(int i_max, int j_max, double** u, double** v, int side) {
+    return set_inflow(i_max, j_max, u, v, side, 0, 0);
+}
+
+int set_inflow(int i_max, int j_max, double** u, double** v, int side, double u_fix, double v_fix) {
+    int i,j;
+    switch(side) {
+        case TOP:            
+            for (i = 1; i <= i_max; i++) {
+                v[i][j_max] = v_fix; /* Set fixed values on border. */
+                u[i][j_max + 1] = 2 * u_fix - u[i][j_max]; /* Set values with no exact border value by averaging. */
+            }
+            break;
+        case BOTTOM:           
+            for (i = 1; i <= i_max; i++) {
+                v[i][0] = v_fix;
+                u[i][0] = 2 * u_fix - u[i][1];
+            }
+            break;
+        case LEFT:        
+            for (j = 1; j <= j_max; j++) {
+                u[0][j] = u_fix;
+                v[0][j] = 2 * v_fix  - v[1][j];
+            }
+            break;
+        case RIGHT:            
+            for (j = 1; j <= j_max; j++) {
+                u[i_max][j] = u_fix;
+                v[i_max+1][j] = 2 * v_fix - v[i_max][j];
+            }
+            break;
+        default: 
+            return -1;
+    }
+
+    return 0;
+}
+
+// Adicione novas funções que lidam com arrays linearizados
+int set_noslip_linear(int i_max, int j_max, double* u, double* v, int side) {
+    return set_inflow_linear(i_max, j_max, u, v, side, 0, 0);
+}
+
+int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix) {
+    int i, j;
+    switch(side) {
+        case TOP:            
+            for (i = 1; i <= i_max; i++) {
+                v[i * (j_max + 2) + j_max] = v_fix; // Set fixed values on border
+                u[i * (j_max + 2) + (j_max + 1)] = 2 * u_fix - u[i * (j_max + 2) + j_max]; // Set values by averaging
+            }
+            break;
+        case BOTTOM:           
+            for (i = 1; i <= i_max; i++) {
+                v[i * (j_max + 2) + 0] = v_fix;
+                u[i * (j_max + 2) + 0] = 2 * u_fix - u[i * (j_max + 2) + 1];
+            }
+            break;
+        case LEFT:        
+            for (j = 1; j <= j_max; j++) {
+                u[0 * (j_max + 2) + j] = u_fix;
+                v[0 * (j_max + 2) + j] = 2 * v_fix - v[1 * (j_max + 2) + j];
+            }
+            break;
+        case RIGHT:            
+            for (j = 1; j <= j_max; j++) {
+                u[i_max * (j_max + 2) + j] = u_fix;
+                v[(i_max+1) * (j_max + 2) + j] = 2 * v_fix - v[i_max * (j_max + 2) + j];
+            }
+            break;
+        default: 
+            return -1;
+    }
+
+    return 0;
 }
