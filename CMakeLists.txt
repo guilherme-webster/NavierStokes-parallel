@@ -23,11 +23,8 @@ set(SOURCES
 set(CUDA_SOURCES
     src/parallel/main.cu
     src/parallel/io.cu
-    src/parallel/boundaries.cu
-    src/parallel/integration.cu
     src/parallel/memory.cu
     # Missing files that contain required functions:
-    src/parallel/utils.cu
     src/parallel/cuda_kernels.cu
 )
 

@@ -15,8 +15,6 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
             double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
             int problem, double f, double* t, int* n_out, double g_x, double g_y);
 
-
-
 // Utility functions
 double max_mat(int i_max, int j_max, double* matrix);
 double n_min(int count, ...);
@@ -25,7 +23,8 @@ double dp_dy(double* p, int i, int j, int j_max, double delta_y);
 
 // Função para calcular o erro L2
 double L2(double** m, int i_max, int j_max);
-void FG(double** F, double** G, double** u, double** v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
+void FG_linear(double** F, double** G, double* u, double* v, int i_max, int j_max,
+        double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
 
 int set_noslip_linear(int i_max, int j_max, double* u, double* v, int side);
 int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix);

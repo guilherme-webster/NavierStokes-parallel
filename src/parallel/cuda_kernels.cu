@@ -320,31 +320,106 @@ int set_inflow_linear(int i_max, int j_max, double* u, double* v, int side, doub
     return 0;
 }
 
-// Criar versão linear da função FG
-void FG_linear(double** F, double** G, double* u_linear, double* v_linear, int i_max, int j_max, 
-              double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
-    // Código que converte o array linear para 2D temporário
-    double** u_temp = (double**)malloc((i_max+2) * sizeof(double*));
-    double** v_temp = (double**)malloc((i_max+2) * sizeof(double*));
+
+// Implementação unificada de FG que trabalha diretamente com arrays lineares
+void FG_linear(double** F, double** G, double* u, double* v, int i_max, int j_max, 
+       double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma) {
     
-    for (int i = 0; i <= i_max+1; i++) {
-        u_temp[i] = (double*)malloc((j_max+2) * sizeof(double));
-        v_temp[i] = (double*)malloc((j_max+2) * sizeof(double));
-        
-        for (int j = 0; j <= j_max+1; j++) {
-            u_temp[i][j] = u_linear[i * (j_max + 2) + j];
-            v_temp[i][j] = v_linear[i * (j_max + 2) + j];
+    // Calcular F e G diretamente acessando os arrays linearizados
+    for (int i = 1; i <= i_max; i++) {
+        for (int j = 1; j <= j_max; j++) {
+            // Calcular F em (i,j)
+            if (i <= i_max-1) {
+                // Termo convectivo em x (donor-cell)
+                double du2_dx = 0.0;
+                if (u[i * (j_max + 2) + j] > 0) {
+                    du2_dx = ((u[i * (j_max + 2) + j] * u[i * (j_max + 2) + j] - 
+                              u[(i-1) * (j_max + 2) + j] * u[(i-1) * (j_max + 2) + j]) / delta_x) *
+                             (1 - gamma) + 
+                             (u[i * (j_max + 2) + j] * (u[i * (j_max + 2) + j] - u[(i-1) * (j_max + 2) + j]) / delta_x) *
+                             gamma;
+                } else {
+                    du2_dx = ((u[(i+1) * (j_max + 2) + j] * u[(i+1) * (j_max + 2) + j] - 
+                              u[i * (j_max + 2) + j] * u[i * (j_max + 2) + j]) / delta_x) *
+                             (1 - gamma) + 
+                             (u[i * (j_max + 2) + j] * (u[(i+1) * (j_max + 2) + j] - u[i * (j_max + 2) + j]) / delta_x) *
+                             gamma;
+                }
+                
+                // Termo convectivo em y
+                double duv_dy = 0.0;
+                if ((v[(i) * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0 > 0) {
+                    duv_dy = ((v[i * (j_max + 2) + j] * u[i * (j_max + 2) + j] - 
+                              v[i * (j_max + 2) + (j-1)] * u[i * (j_max + 2) + (j-1)]) / delta_y) *
+                             (1 - gamma) + 
+                             ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0) * 
+                             (u[i * (j_max + 2) + j] - u[i * (j_max + 2) + (j-1)]) / delta_y * 
+                             gamma;
+                } else {
+                    duv_dy = ((v[i * (j_max + 2) + (j+1)] * u[i * (j_max + 2) + (j+1)] - 
+                              v[i * (j_max + 2) + j] * u[i * (j_max + 2) + j]) / delta_y) *
+                             (1 - gamma) + 
+                             ((v[i * (j_max + 2) + j] + v[(i+1) * (j_max + 2) + j]) / 2.0) * 
+                             (u[i * (j_max + 2) + (j+1)] - u[i * (j_max + 2) + j]) / delta_y * 
+                             gamma;
+                }
+                
+                // Termos difusivos
+                double d2u_dx2 = (u[(i+1) * (j_max + 2) + j] - 2.0 * u[i * (j_max + 2) + j] + u[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
+                double d2u_dy2 = (u[i * (j_max + 2) + (j+1)] - 2.0 * u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
+                
+                // F[i][j] no formato 2D normal
+                F[i][j] = u[i * (j_max + 2) + j] + delta_t * (
+                              1.0/Re * (d2u_dx2 + d2u_dy2) - du2_dx - duv_dy + g_x
+                          );
+            }
+            
+            // Calcular G em (i,j)
+            if (j <= j_max-1) {
+                // Implementação similar para G
+                // Termo convectivo em x
+                double duv_dx = 0.0;
+                if ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0 > 0) {
+                    duv_dx = ((u[i * (j_max + 2) + j] * v[i * (j_max + 2) + j] - 
+                              u[(i-1) * (j_max + 2) + j] * v[(i-1) * (j_max + 2) + j]) / delta_x) *
+                             (1 - gamma) + 
+                             ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0) * 
+                             (v[i * (j_max + 2) + j] - v[(i-1) * (j_max + 2) + j]) / delta_x * 
+                             gamma;
+                } else {
+                    duv_dx = ((u[(i+1) * (j_max + 2) + j] * v[(i+1) * (j_max + 2) + j] - 
+                              u[i * (j_max + 2) + j] * v[i * (j_max + 2) + j]) / delta_x) *
+                             (1 - gamma) + 
+                             ((u[i * (j_max + 2) + j] + u[i * (j_max + 2) + (j+1)]) / 2.0) * 
+                             (v[(i+1) * (j_max + 2) + j] - v[i * (j_max + 2) + j]) / delta_x * 
+                             gamma;
+                }
+                
+                // Termo convectivo em y
+                double dv2_dy = 0.0;
+                if (v[i * (j_max + 2) + j] > 0) {
+                    dv2_dy = ((v[i * (j_max + 2) + j] * v[i * (j_max + 2) + j] - 
+                              v[i * (j_max + 2) + (j-1)] * v[i * (j_max + 2) + (j-1)]) / delta_y) *
+                             (1 - gamma) + 
+                             (v[i * (j_max + 2) + j] * (v[i * (j_max + 2) + j] - v[i * (j_max + 2) + (j-1)]) / delta_y) *
+                             gamma;
+                } else {
+                    dv2_dy = ((v[i * (j_max + 2) + (j+1)] * v[i * (j_max + 2) + (j+1)] - 
+                              v[i * (j_max + 2) + j] * v[i * (j_max + 2) + j]) / delta_y) *
+                             (1 - gamma) + 
+                             (v[i * (j_max + 2) + j] * (v[i * (j_max + 2) + (j+1)] - v[i * (j_max + 2) + j]) / delta_y) *
+                             gamma;
+                }
+                
+                // Termos difusivos
+                double d2v_dx2 = (v[(i+1) * (j_max + 2) + j] - 2.0 * v[i * (j_max + 2) + j] + v[(i-1) * (j_max + 2) + j]) / (delta_x * delta_x);
+                double d2v_dy2 = (v[i * (j_max + 2) + (j+1)] - 2.0 * v[i * (j_max + 2) + j] + v[i * (j_max + 2) + (j-1)]) / (delta_y * delta_y);
+                
+                // G[i][j] no formato 2D normal
+                G[i][j] = v[i * (j_max + 2) + j] + delta_t * (
+                              1.0/Re * (d2v_dx2 + d2v_dy2) - duv_dx - dv2_dy + g_y
+                          );
+            }
         }
     }
-    
-    // Chama a função FG original
-    FG(F, G, u_temp, v_temp, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
-    
-    // Libera a memória temporária
-    for (int i = 0; i <= i_max+1; i++) {
-        free(u_temp[i]);
-        free(v_temp[i]);
-    }
-    free(u_temp);
-    free(v_temp);
 }
