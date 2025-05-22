@@ -7,8 +7,6 @@
 
 int main(int argc, char* argv[])
 {
-    fprintf(stderr, "Starting Navier-Stokes CUDA parallel solver\n");
-    
     double** u;     
     double** v;     
     double** p;     
@@ -46,21 +44,18 @@ int main(int argc, char* argv[])
         }
     }
     
-    fprintf(stderr, "Loading parameters from: %s\n", param_file);
     int init_result = init(&problem, &f, &i_max, &j_max, &a, &b, &T, &Re, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     if (init_result != 0) {
         fprintf(stderr, "Failed to initialize parameters\n");
         return 1;
     }
-    fprintf(stderr, "Parameters loaded: i_max=%d, j_max=%d, Re=%.1f\n", i_max, j_max, Re);
     printf("Initialized!\n");
 
     delta_x = a / i_max;
     delta_y = b / j_max;
 
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated. Dimensions: i_max=%d, j_max=%d\n", i_max, j_max);
-    
+    printf("Memory allocated.\n");
     // Verificar alocações antes de inicializar CUDA
     if (p == NULL || u == NULL || v == NULL || res == NULL || RHS == NULL || F == NULL || G == NULL) {
         fprintf(stderr, "ERROR: Memory allocation failed before CUDA initialization\n");
@@ -74,7 +69,6 @@ int main(int argc, char* argv[])
         free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
         return 1;
     }
-    printf("CUDA arrays initialized.\n");
 
     double t = 0;
     int i, j;
