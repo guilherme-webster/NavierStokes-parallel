@@ -161,8 +161,8 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     *d_vmax = 0.0;
     int max_blocks = 32; // Ajuste conforme o tamanho do domínio
     int max_threads = 256;
-    max_mat_kernel<<<max_blocks, max_threads>>>(unified_u, i_max, j_max, d_umax);
-    max_mat_kernel<<<max_blocks, max_threads>>>(unified_v, i_max, j_max, d_vmax);
+    max_mat_kernel_double<<<max_blocks, max_threads>>>(unified_u, i_max, j_max, d_umax);
+    max_mat_kernel_double<<<max_blocks, max_threads>>>(unified_v, i_max, j_max, d_vmax);
     CUDACHECK(cudaDeviceSynchronize());
     u_max = *d_umax;
     v_max = *d_vmax;
@@ -284,6 +284,31 @@ __global__ void max_mat_kernel(const T* mat, int i_max, int j_max, T* max_val) {
         int i = 1 + k / j_max;
         int j = 1 + k % j_max;
         T val = fabs(mat[i * (j_max + 2) + j]);
+        if (val > local_max) local_max = val;
+    }
+    sdata[tid] = local_max;
+    __syncthreads();
+    // Redução em bloco
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            if (sdata[tid + s] > sdata[tid]) sdata[tid] = sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) atomicMax((int*)max_val, __double_as_int(sdata[0]));
+}
+
+// Kernel para encontrar o valor máximo absoluto em uma matriz linearizada (versão especializada para double)
+__global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, double* max_val) {
+    __shared__ double sdata[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = (i_max) * (j_max);
+    double local_max = 0.0;
+    for (int k = idx; k < total; k += blockDim.x * gridDim.x) {
+        int i = 1 + k / j_max;
+        int j = 1 + k % j_max;
+        double val = fabs(mat[i * (j_max + 2) + j]);
         if (val > local_max) local_max = val;
     }
     sdata[tid] = local_max;

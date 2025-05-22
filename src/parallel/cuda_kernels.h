@@ -21,10 +21,13 @@ double n_min(int n, double a, double b, double c, double d);
 
 // KERNELS CUDA (definidos em cuda_kernels.cu)
 #ifdef __CUDACC__
-// CUDA kernel launches
+// Template precisa estar fora do extern "C"
+template <typename T>
+__global__ void max_mat_kernel(const T* mat, int i_max, int j_max, T* max_val);
+
+// CUDA kernel launches em extern "C" (sem template)
 extern "C" {
-    template <typename T>
-    __global__ void max_mat_kernel(const T* mat, int i_max, int j_max, T* max_val);
+    __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, double* max_val);
     __global__ void dp_dx_kernel(const double* p, double* out, int i_max, int j_max, double delta_x);
     __global__ void dp_dy_kernel(const double* p, double* out, int i_max, int j_max, double delta_y);
     __global__ void set_noslip_linear_kernel(int i_max, int j_max, double* u, double* v, int side);
@@ -40,6 +43,7 @@ extern "C" {
 // Para compilação C/C++ normal, declarar apenas os protótipos das funções host
 template <typename T>
 void max_mat_kernel(const T* mat, int i_max, int j_max, T* max_val);
+void max_mat_kernel_double(const double* mat, int i_max, int j_max, double* max_val);
 void dp_dx_kernel(const double* p, double* out, int i_max, int j_max, double delta_x);
 void dp_dy_kernel(const double* p, double* out, int i_max, int j_max, double delta_y);
 void set_noslip_linear_kernel(int i_max, int j_max, double* u, double* v, int side);
