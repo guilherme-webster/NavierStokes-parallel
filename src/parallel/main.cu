@@ -306,10 +306,14 @@ int main(int argc, char* argv[])
                 (float)timestep/MAX_TIMESTEPS*100.0, u_max_val_cpu, v_max_val_cpu);
         }
 
-        // Calculate F and G directly on device
-        NavierStokesStepKernel<<<gridSize, blockSize>>>(
-            d_u, d_v, NULL, d_F, d_G, NULL, NULL,
-            i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma, 0.0, 0.0, 0);
+        // Calculate F and G directly on device using separate kernels
+        CalculateFKernel<<<gridSize, blockSize>>>(
+            d_u, d_v, d_F, i_max, j_max, Re, g_x, delta_t, delta_x, delta_y);
+        CUDACHECK(cudaGetLastError());
+        CUDACHECK(cudaDeviceSynchronize());
+
+        CalculateGKernel<<<gridSize, blockSize>>>(
+            d_u, d_v, d_G, i_max, j_max, Re, g_y, delta_t, delta_x, delta_y);
         CUDACHECK(cudaGetLastError());
         CUDACHECK(cudaDeviceSynchronize());
 

@@ -17,117 +17,95 @@ void check_cuda(cudaError_t error, const char *filename, const int line)
 #define BLOCK_SIZE 16
 #define OVERLAP 2  // Overlap size between subdomains
 
-// Integrated kernel that handles an entire Navier-Stokes timestep
-__global__ void NavierStokesStepKernel(
-    double* u, double* v, double* p, double* F, double* G, double* RHS, double* res,
-    int i_max, int j_max, double Re, double g_x, double g_y,
-    double delta_t, double delta_x, double delta_y, double gamma,
-    double omega, double eps, int max_sor_iter) {
-    
-    // Define shared memory - with halo regions for stencil operations
-    __shared__ double s_u[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
-    __shared__ double s_v[(BLOCK_SIZE+2) * (BLOCK_SIZE+2)];
-    
-    // Global indices
+// Kernel to calculate F values (intermediate velocity in x-direction)
+__global__ void CalculateFKernel(double* u, double* v, double* F, 
+                                int i_max, int j_max, double Re, double g_x,
+                                double delta_t, double delta_x, double delta_y) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    // Local indices for shared memory (with offset for halo)
-    int tx = threadIdx.x + 1;
-    int ty = threadIdx.y + 1;
-    int s_width = blockDim.x + 2;
-    
-    // Load center values into shared memory
-    int s_idx = tx * s_width + ty;
-    int g_idx = i * (j_max + 2) + j;
-    
-    // Initialize shared memory with zeros for safety
-    s_u[s_idx] = 0.0;
-    s_v[s_idx] = 0.0;
-    
-    // Load valid data points
-    if (i <= i_max+1 && j <= j_max+1) {
-        s_u[s_idx] = u[g_idx];
-        s_v[s_idx] = v[g_idx];
-    }
-    
-    // Load halo regions - left and right columns
-    if (threadIdx.x == 0 && i > 1) {
-        s_u[(tx-1) * s_width + ty] = u[(i-1) * (j_max + 2) + j];
-        s_v[(tx-1) * s_width + ty] = v[(i-1) * (j_max + 2) + j];
-    }
-    if (threadIdx.x == blockDim.x-1 && i <= i_max) {
-        s_u[(tx+1) * s_width + ty] = u[(i+1) * (j_max + 2) + j];
-        s_v[(tx+1) * s_width + ty] = v[(i+1) * (j_max + 2) + j];
-    }
-    
-    // Load halo regions - top and bottom rows
-    if (threadIdx.y == 0 && j > 1) {
-        s_u[tx * s_width + (ty-1)] = u[i * (j_max + 2) + (j-1)];
-        s_v[tx * s_width + (ty-1)] = v[i * (j_max + 2) + (j-1)];
-    }
-    if (threadIdx.y == blockDim.y-1 && j <= j_max) {
-        s_u[tx * s_width + (ty+1)] = u[i * (j_max + 2) + (j+1)];
-        s_v[tx * s_width + (ty+1)] = v[i * (j_max + 2) + (j+1)];
-    }
-    
-    __syncthreads();
-    
+    // F is calculated for internal points only
     if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
-        // Calculate F term using shared memory
-        // Original condition: if (i < i_max && j > 0)
-        // Corrected: F should be calculated for all i in [1, i_max]
-        // The outer if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) already covers this.
-        // No inner 'if' needed if F is cell-centered and defined everywhere u is.
-        // However, to match the update domain of u, F is needed for u(i,j) where i goes to i_max-1.
-        // If u is updated up to i_max, F must be computed up to i_max.
-        // Let's assume F, G, u, v are all cell-centered and should be computed for all interior cells.
+        int idx = i * (j_max + 2) + j;
+        
+        // Convection terms: du²/dx and duv/dy
+        double du2_dx = 0.0, duv_dy = 0.0;
+        double d2u_dx2 = 0.0, d2u_dy2 = 0.0;
+        
+        // du²/dx = ∂(u²)/∂x
+        if (i > 1 && i < i_max) {
+            double u_east = 0.5 * (u[idx] + u[(i+1)*(j_max+2) + j]);
+            double u_west = 0.5 * (u[idx] + u[(i-1)*(j_max+2) + j]);
+            du2_dx = (u_east * u_east - u_west * u_west) / delta_x;
+        }
+        
+        // duv/dy = ∂(uv)/∂y  
+        if (j > 1 && j < j_max) {
+            double uv_north = 0.25 * (u[idx] + u[i*(j_max+2) + (j+1)]) * 
+                                    (v[idx] + v[(i+1)*(j_max+2) + j]);
+            double uv_south = 0.25 * (u[idx] + u[i*(j_max+2) + (j-1)]) * 
+                                    (v[i*(j_max+2) + (j-1)] + v[(i+1)*(j_max+2) + (j-1)]);
+            duv_dy = (uv_north - uv_south) / delta_y;
+        }
+        
+        // Diffusion terms: ∂²u/∂x² and ∂²u/∂y²
+        if (i > 1 && i < i_max) {
+            d2u_dx2 = (u[(i+1)*(j_max+2) + j] - 2.0*u[idx] + u[(i-1)*(j_max+2) + j]) / (delta_x * delta_x);
+        }
+        if (j > 1 && j < j_max) {
+            d2u_dy2 = (u[i*(j_max+2) + (j+1)] - 2.0*u[idx] + u[i*(j_max+2) + (j-1)]) / (delta_y * delta_y);
+        }
+        
+        // Calculate F = u + dt * (viscous - convective + gravity)
+        F[idx] = u[idx] + delta_t * (
+            (1.0/Re) * (d2u_dx2 + d2u_dy2) - du2_dx - duv_dy + g_x
+        );
+    }
+}
 
-        // Calculate F term
-        double u_central_for_F = s_u[tx * s_width + ty];
-        double v_average_for_F = (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty] + 
-                                  s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * 0.25;
-        
-        double du2_dx_for_F = ((s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) * (s_u[tx * s_width + ty] + s_u[(tx+1) * s_width + ty]) -
-                               (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]) * (s_u[(tx-1) * s_width + ty] + s_u[tx * s_width + ty]))
-                              / (4.0 * delta_x);
-        
-        double duv_dy_for_F = ((s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) * (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) -
-                               (s_v[tx * s_width + (ty-1)] + s_v[(tx+1) * s_width + (ty-1)]) * (s_u[tx * s_width + (ty-1)] + s_u[tx * s_width + ty]))
-                              / (4.0 * delta_y);
-        
-        double d2u_dx2_for_F = (s_u[(tx+1) * s_width + ty] - 2.0 * s_u[tx * s_width + ty] + s_u[(tx-1) * s_width + ty])
-                               / (delta_x * delta_x);
-        
-        double d2u_dy2_for_F = (s_u[tx * s_width + (ty+1)] - 2.0 * s_u[tx * s_width + ty] + s_u[tx * s_width + (ty-1)])
-                               / (delta_y * delta_y);
-        
-        F[g_idx] = u_central_for_F + delta_t * (
-                                     1.0/Re * (d2u_dx2_for_F + d2u_dy2_for_F) -
-                                     du2_dx_for_F - duv_dy_for_F + g_x);
+// Kernel to calculate G values (intermediate velocity in y-direction)
+__global__ void CalculateGKernel(double* u, double* v, double* G, 
+                                int i_max, int j_max, double Re, double g_y,
+                                double delta_t, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-        // Calculate G term
-        double v_central_for_G = s_v[tx * s_width + ty];
-        double u_average_for_G = (s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)] + 
-                                  s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * 0.25;
+    // G is calculated for internal points only
+    if (i >= 1 && i <= i_max && j >= 1 && j <= j_max) {
+        int idx = i * (j_max + 2) + j;
         
-        double duv_dx_for_G = ((s_u[tx * s_width + ty] + s_u[tx * s_width + (ty+1)]) * (s_v[tx * s_width + ty] + s_v[(tx+1) * s_width + ty]) -
-                               (s_u[(tx-1) * s_width + ty] + s_u[(tx-1) * s_width + (ty+1)]) * (s_v[(tx-1) * s_width + ty] + s_v[tx * s_width + ty]))
-                              / (4.0 * delta_x);
+        // Convection terms: duv/dx and dv²/dy
+        double duv_dx = 0.0, dv2_dy = 0.0;
+        double d2v_dx2 = 0.0, d2v_dy2 = 0.0;
         
-        double dv2_dy_for_G = ((s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) * (s_v[tx * s_width + ty] + s_v[tx * s_width + (ty+1)]) -
-                               (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]) * (s_v[tx * s_width + (ty-1)] + s_v[tx * s_width + ty]))
-                              / (4.0 * delta_y);
+        // duv/dx = ∂(uv)/∂x
+        if (i > 1 && i < i_max) {
+            double uv_east = 0.25 * (u[idx] + u[i*(j_max+2) + (j+1)]) * 
+                                   (v[idx] + v[(i+1)*(j_max+2) + j]);
+            double uv_west = 0.25 * (u[(i-1)*(j_max+2) + j] + u[(i-1)*(j_max+2) + (j+1)]) * 
+                                   (v[idx] + v[(i-1)*(j_max+2) + j]);
+            duv_dx = (uv_east - uv_west) / delta_x;
+        }
         
-        double d2v_dx2_for_G = (s_v[(tx+1) * s_width + ty] - 2.0 * s_v[tx * s_width + ty] + s_v[(tx-1) * s_width + ty])
-                               / (delta_x * delta_x);
+        // dv²/dy = ∂(v²)/∂y
+        if (j > 1 && j < j_max) {
+            double v_north = 0.5 * (v[idx] + v[i*(j_max+2) + (j+1)]);
+            double v_south = 0.5 * (v[idx] + v[i*(j_max+2) + (j-1)]);
+            dv2_dy = (v_north * v_north - v_south * v_south) / delta_y;
+        }
         
-        double d2v_dy2_for_G = (s_v[tx * s_width + (ty+1)] - 2.0 * s_v[tx * s_width + ty] + s_v[tx * s_width + (ty-1)])
-                               / (delta_y * delta_y);
+        // Diffusion terms: ∂²v/∂x² and ∂²v/∂y²
+        if (i > 1 && i < i_max) {
+            d2v_dx2 = (v[(i+1)*(j_max+2) + j] - 2.0*v[idx] + v[(i-1)*(j_max+2) + j]) / (delta_x * delta_x);
+        }
+        if (j > 1 && j < j_max) {
+            d2v_dy2 = (v[i*(j_max+2) + (j+1)] - 2.0*v[idx] + v[i*(j_max+2) + (j-1)]) / (delta_y * delta_y);
+        }
         
-        G[g_idx] = v_central_for_G + delta_t * (
-                                     1.0/Re * (d2v_dx2_for_G + d2v_dy2_for_G) -
-                                     duv_dx_for_G - dv2_dy_for_G + g_y);
+        // Calculate G = v + dt * (viscous - convective + gravity)
+        G[idx] = v[idx] + delta_t * (
+            (1.0/Re) * (d2v_dx2 + d2v_dy2) - duv_dx - dv2_dy + g_y
+        );
     }
 }
 
