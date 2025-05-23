@@ -300,29 +300,11 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
-    // debug: print block/thread info
-    if (tid == 0) {
-        printf("[max_reduce] Start block %d threads=%d stride=%d total_elements=%d\n", blockIdx.x, blockDim.x, stride, i_max*j_max);
-    }
-    __syncthreads();
+    double max_val_local = -1e5;
 
-    double max_val_local;
-    if (global_idx < i_max * j_max) {
-        max_val_local = arr[global_idx];
-    } else {
-        max_val_local = -1e30;
-    }
-    // debug: each thread prints its initial value
-    printf("[max_reduce] block %d tid %d global_idx %d initial=%f\n", blockIdx.x, tid, global_idx, max_val_local);
-    __syncthreads();
-
-    // reduction loop
     for (int i = global_idx; i < i_max * j_max; i += stride) {
-        double v = arr[i];
-        if (v > max_val_local) {
-            max_val_local = v;
-            // debug: update
-            printf("[max_reduce] block %d tid %d found new_local_max=%f at idx=%d\n", blockIdx.x, tid, max_val_local, i);
+        if (arr[i] > max_val_local) {
+            max_val_local = arr[i];
         }
     }
 
@@ -330,21 +312,14 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            if (shared_data[tid + s] > shared_data[tid]) {
-                shared_data[tid] = shared_data[tid + s];
-                // debug: thread tid updates during tree reduction
-                printf("[max_reduce] block %d tid %d updated shared[%d]=%f\n", blockIdx.x, tid, tid, shared_data[tid]);
-            }
+        if (tid < s && shared_data[tid + s] > shared_data[tid]) {
+            shared_data[tid] = shared_data[tid + s];
         }
         __syncthreads();
     }
 
     if (tid == 0) {
-        // debug: block result before atomic
-        printf("[max_reduce] block %d partial_max=%f before atomic\n", blockIdx.x, shared_data[0]);
         atomicMax(&max_val[0], shared_data[0]);
-        printf("[max_reduce] block %d after atomic global max_val=%f\n", blockIdx.x, max_val[0]);
     }
 }
 
