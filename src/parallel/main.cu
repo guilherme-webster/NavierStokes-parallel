@@ -55,10 +55,7 @@ void free_memory_kernel();
 
 __global__ void pick_max();
 
-
-
 double orchestration(int i_max, int j_max);
-    
 
 __global__ void min_and_gamma ();
 
@@ -366,11 +363,11 @@ double orchestration(int i_max, int j_max) {
         pick_max<<<1,1>>>(); 
 
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_norm_p);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_du_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,d_norm_res);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,d_dv_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
         size /= threads;
