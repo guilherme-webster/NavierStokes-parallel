@@ -309,6 +309,7 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     }
 
     shared_data[tid] = max_val_local;
+    printf("blk=%d tid=%d local_max=%f\n", blockIdx.x, tid, max_val_local);
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
@@ -318,8 +319,9 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
         __syncthreads();
     }
 
-    if (tid == 0) {
-        atomicMax(&max_val[0], shared_data[0]);
+    if (tid==0) {
+      printf("blk=%d block_max=%f -> atomicMax\n", blockIdx.x, shared_data[0]);
+      atomicMax(&max_val[0], shared_data[0]);
     }
 }
 
