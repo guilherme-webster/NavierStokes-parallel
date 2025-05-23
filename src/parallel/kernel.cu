@@ -148,11 +148,13 @@ double orchestration(int i_max, int j_max) {
 
     // acha o máximo da matriz u e v
     while (size > 1){
-        double du_max = -1e5;
-        double dv_max = -1e5;
-        
+        double* du_max, *dv_max;
+        cudaMalloc((void**)&du_max, sizeof(double));
+        cudaMalloc((void**)&dv_max, sizeof(double));
+        cudaMemset(du_max, 0, sizeof(double));
+        cudaMemset(dv_max, 0, sizeof(double));
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,*du_max);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u, *du_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
