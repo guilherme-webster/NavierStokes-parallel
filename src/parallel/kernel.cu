@@ -5,13 +5,13 @@
 #include <cuda_runtime.h>
 
 // arrays iniciadas em 0
-double* d_F, *d_G;
-double* d_RHS, *d_res;
-double* d_u, *d_v, *d_p;
+__device__ double* d_F, *d_G;
+__device__ double* d_RHS, *d_res;
+__device__ double* d_u, *d_v, *d_p;
 
 // variaveis do device
-double d_delta_t, d_delta_x, d_delta_y, d_gamma;
-double du_max, dv_max;
+__device__ double d_delta_t, d_delta_x, d_delta_y, d_gamma;
+__device__ double du_max, dv_max;
 
 // variaveis tiradas do host (device pointers)
 __device__ int* d_i_max, *d_j_max;
