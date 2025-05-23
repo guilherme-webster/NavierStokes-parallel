@@ -27,7 +27,7 @@ double* d_norm_p, *d_norm_res;
 void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
                 , double* omega, double* epsilon, int* max_it) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    //variaveis de valor 0 (estes são ponteiros do host, cudaMalloc está correto aqui)
+    //variaveis de valor 0
     cudaMalloc((void**) &d_u , size);
     cudaMalloc((void**) &d_v , size);
     cudaMalloc((void**) &d_p , size);
@@ -35,7 +35,15 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     cudaMalloc((void**) &d_G , size);
     cudaMalloc((void**) &d_res , size);
     cudaMalloc((void**) &d_RHS , size);
-
+    cudaMalloc((void**) &du_max , sizeof(double));
+    cudaMalloc((void**) &dv_max , sizeof(double));
+    cudaMalloc((void**) &d_delta_t , sizeof(double));
+    cudaMalloc((void**) &d_delta_x , sizeof(double));
+    cudaMalloc((void**) &d_delta_y , sizeof(double));
+    cudaMalloc((void**) &d_gamma , sizeof(double));
+    cudaMalloc((void**) &d_norm_p , sizeof(double));
+    cudaMalloc((void**) &d_norm_res , sizeof(double));
+    
     cudaMemset(d_u, 0, size);
     cudaMemset(d_v, 0, size);
     cudaMemset(d_p, 0, size);
@@ -43,75 +51,37 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     cudaMemset(d_G, 0, size);
     cudaMemset(d_res, 0, size);
     cudaMemset(d_RHS, 0, size);
-    
-    // variaveis copiadas do host (para __device__ pointers)
 
-    // Exemplo para d_i_max (passado por valor i_max)
-    int* temp_d_i_max_ptr;
-    cudaMalloc((void**)&temp_d_i_max_ptr, sizeof(int));
-    cudaMemcpy(temp_d_i_max_ptr, &i_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_i_max, &temp_d_i_max_ptr, sizeof(int*));
+    // update device symbols for d_u and d_v so __device__ pointers are valid
+    cudaMemcpyToSymbol(d_u, &d_u, sizeof(double*));
+    cudaMemcpyToSymbol(d_v, &d_v, sizeof(double*));
 
-    // Exemplo para d_j_max (passado por valor j_max)
-    int* temp_d_j_max_ptr;
-    cudaMalloc((void**)&temp_d_j_max_ptr, sizeof(int));
-    cudaMemcpy(temp_d_j_max_ptr, &j_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_j_max, &temp_d_j_max_ptr, sizeof(int*));
-
-    // Exemplo para d_tau (passado por ponteiro host tau)
-    double* temp_d_tau_ptr;
-    cudaMalloc((void**)&temp_d_tau_ptr, sizeof(double));
-    cudaMemcpy(temp_d_tau_ptr, tau, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_tau, &temp_d_tau_ptr, sizeof(double*));
-
-    // Exemplo para d_Re
-    double* temp_d_Re_ptr;
-    cudaMalloc((void**)&temp_d_Re_ptr, sizeof(double));
-    cudaMemcpy(temp_d_Re_ptr, Re, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_Re, &temp_d_Re_ptr, sizeof(double*));
-
-    // Exemplo para d_boundary_indices
-    BoundaryPoint* temp_d_boundary_indices_ptr;
-    cudaMalloc((void**)&temp_d_boundary_indices_ptr, total_points * sizeof(BoundaryPoint));
-    cudaMemcpy(temp_d_boundary_indices_ptr, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_boundary_indices, &temp_d_boundary_indices_ptr, sizeof(BoundaryPoint*));
-
-    // Exemplo para d_gx
-    double* temp_d_gx_ptr;
-    cudaMalloc((void**)&temp_d_gx_ptr, sizeof(double));
-    cudaMemcpy(temp_d_gx_ptr, g_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_gx, &temp_d_gx_ptr, sizeof(double*));
-
-    // Exemplo para d_gy
-    double* temp_d_gy_ptr;
-    cudaMalloc((void**)&temp_d_gy_ptr, sizeof(double));
-    cudaMemcpy(temp_d_gy_ptr, g_y, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_gy, &temp_d_gy_ptr, sizeof(double*));
-    
-    // Exemplo para d_omega
-    double* temp_d_omega_ptr;
-    cudaMalloc((void**)&temp_d_omega_ptr, sizeof(double));
-    cudaMemcpy(temp_d_omega_ptr, omega, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_omega, &temp_d_omega_ptr, sizeof(double*));
-
-    // Exemplo para d_epsilon
-    double* temp_d_epsilon_ptr;
-    cudaMalloc((void**)&temp_d_epsilon_ptr, sizeof(double));
-    cudaMemcpy(temp_d_epsilon_ptr, epsilon, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_epsilon, &temp_d_epsilon_ptr, sizeof(double*));
-
-    // Exemplo para d_max_it
-    int* temp_d_max_it_ptr;
-    cudaMalloc((void**)&temp_d_max_it_ptr, sizeof(int));
-    cudaMemcpy(temp_d_max_it_ptr, max_it, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_max_it, &temp_d_max_it_ptr, sizeof(int*));
-
-    // Alocação para d_norm_p e d_norm_res (estes são ponteiros do host, cudaMalloc está correto)
-    // É uma boa prática inicializá-los se forem usados em reduções com adição.
+    // variaveis copiadas do host
+    cudaMalloc((void**) &d_tau, sizeof(double));
+    cudaMalloc((void**) &d_Re, sizeof(double));
+    cudaMalloc((void**) &d_i_max, sizeof(int));
+    cudaMalloc((void**) &d_j_max, sizeof(int));
+    cudaMalloc((void**) &d_boundary_indices, total_points * sizeof(BoundaryPoint));
+    cudaMalloc((void**) &d_gx, sizeof(double));
+    cudaMalloc((void**) &d_gy, sizeof(double));
+    cudaMalloc((void**) &d_omega, sizeof(double));
+    cudaMalloc((void**) &d_epsilon, sizeof(double));
+    cudaMalloc((void**) &d_max_it, sizeof(int));
     cudaMalloc((void**) &d_norm_p, sizeof(double));
-    cudaMemset(d_norm_p, 0, sizeof(double)); // Inicializa para 0
     cudaMalloc((void**) &d_norm_res, sizeof(double));
-    cudaMemset(d_norm_res, 0, sizeof(double)); // Inicializa para 0
+
+    
+    cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_omega, omega, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_epsilon, epsilon, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_i_max, &i_max, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_j_max, &j_max, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tau, tau, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Re, Re, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gx, g_x, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gy, g_y, sizeof(double), cudaMemcpyHostToDevice);
+
 }
 
 
