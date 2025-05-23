@@ -74,8 +74,8 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
 
 
 __global__ void pick_max() {
-    du_max = d[0];
-    dv_max = d[1];
+    du_max = d_u[0];
+    dv_max = d_v[1];
 }
 
 
@@ -503,7 +503,7 @@ __global__ void calculate_ghost() {
             break;
     }
 }
-}
+
 
 
 __global__ void L2_norm(double* norm, double* m, int i_max, int j_max) {
