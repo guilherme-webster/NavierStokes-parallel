@@ -23,6 +23,18 @@
         } \
     } while(0)
 
+// simple logging
+#define LOG(msg) fprintf(stderr, "[%s:%d] %s\n", __FILE__, __LINE__, msg)
+// synchronize and check errors
+#define SYNC_CHECK(name) \
+  do { \
+    cudaError_t e = cudaDeviceSynchronize(); \
+    if (e != cudaSuccess) { \
+      fprintf(stderr, "Error after %s: %s\n", name, cudaGetErrorString(e)); \
+      exit(e); \
+    } \
+  } while(0)
+
 // arrays iniciadas em 0
 __device__ double* d_F, *d_G;
 __device__ double* d_RHS, *d_res;
@@ -145,48 +157,48 @@ double orchestration(int i_max, int j_max) {
     int blocks = (i_max * j_max + threads - 1) / threads;
     int size = i_max * j_max;
 
+    LOG("enter orchestration");
     // acha o máximo da matriz u e v
     while (size > 1){
-        blocks = (size + threads - 1) / threads;
-        pick_max<<<1, 1>>>();
-        KERNEL_CHECK();
-        cudaDeviceSynchronize();
-        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(*d_i_max, *d_j_max, d_u, d_norm_p);
-        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(*d_i_max, *d_j_max, d_v, d_norm_res);
-        KERNEL_CHECK();
-        cudaDeviceSynchronize();
-        size = size / threads;
+        LOG("launch pick_max");
+        pick_max<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("pick_max"); LOG("pick_max complete");
+
+        LOG("launch max_reduce u");
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_norm_p);
+        KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
+
+        LOG("launch max_reduce v");
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,d_norm_res);
+        KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
+
+        size /= threads;
     }
-    
-    min_and_gamma<<<1, 1>>>();
-    KERNEL_CHECK();
-    
-    cudaDeviceSynchronize();
 
-    update_boundaries_kernel<<<blocks, threads>>>();
-    KERNEL_CHECK();
+    LOG("launch min_and_gamma");
+    min_and_gamma<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
 
-    cudaDeviceSynchronize();
+    LOG("launch update_boundaries");
+    update_boundaries_kernel<<<blocks,threads>>>(); KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
-    printf("Conditions set!\n");
+    LOG("launch calculate_F");
+    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gx,d_delta_t,d_delta_x,d_delta_y,d_gamma);
+    KERNEL_CHECK(); SYNC_CHECK("calculate_F"); LOG("calculate_F complete");
 
-    // now we calculate F and G
-    calculate_F<<<blocks, threads>>>(d_F, d_u, d_v, *d_i_max, *d_j_max, *d_Re, *d_gx, d_delta_t, d_delta_x, d_delta_y, d_gamma);
-    calculate_G<<<blocks, threads>>>(d_G, d_u, d_v, *d_i_max, *d_j_max, *d_Re, *d_gy, d_delta_t, d_delta_x, d_delta_y, d_gamma);    
-    KERNEL_CHECK();
-
-    cudaDeviceSynchronize();
-
-    printf("F, G calculated!\n");
+    LOG("launch calculate_G");
+    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gy,d_delta_t,d_delta_x,d_delta_y,d_gamma);
+    KERNEL_CHECK(); SYNC_CHECK("calculate_G"); LOG("calculate_G complete");
 
     // now we calculate rhs
+    LOG("launch calculate_RHS");
     calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, *d_i_max, *d_j_max, d_delta_t, d_delta_x, d_delta_y);
-    KERNEL_CHECK();
+    KERNEL_CHECK(); SYNC_CHECK("calculate_RHS"); LOG("calculate_RHS complete");
 
     cudaDeviceSynchronize();
     
+    LOG("launch L2_norm for norm_p");
     L2_norm<<<blocks, threads>>>(d_norm_p, d_p, *d_i_max, *d_j_max);
-    
+    KERNEL_CHECK(); SYNC_CHECK("L2_norm for norm_p"); LOG("L2_norm for norm_p complete");
+
     cudaDeviceSynchronize();
     
     double norm_p;
@@ -199,26 +211,28 @@ double orchestration(int i_max, int j_max) {
     cudaMemcpy(&epsilon, d_epsilon, sizeof(double), cudaMemcpyDeviceToHost);
     
     while(it < max_it) {
+        LOG("launch calculate_ghost");
         calculate_ghost<<<blocks, threads>>>();
-
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); LOG("calculate_ghost complete");
 
         printf("RHS calculated!\n");
         // Now execute de SOR black and red
+        LOG("launch red_kernel");
         red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
-        
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); LOG("red_kernel complete");
 
+        LOG("launch black_kernel");
         black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
+        cudaDeviceSynchronize(); LOG("black_kernel complete");
 
-        cudaDeviceSynchronize();
-    
+        LOG("launch residual_kernel");
         residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, *d_i_max, *d_j_max, d_delta_x, d_delta_y);
-        
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); LOG("residual_kernel complete");
 
+        LOG("launch L2_norm for norm_res");
         L2_norm<<<blocks, threads>>>(d_norm_res, d_res, *d_i_max, *d_j_max);
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize(); LOG("L2_norm for norm_res complete");
+
         double norm_res;
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
@@ -242,6 +256,7 @@ double orchestration(int i_max, int j_max) {
     printf("V-CENTER: %.6f\n", result[1]);
     printf("P-CENTER: %.6f\n", result[2]);
 
+    LOG("exit orchestration");
     return result[3];
 }
 
