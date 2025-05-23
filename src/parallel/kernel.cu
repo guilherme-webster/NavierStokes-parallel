@@ -9,88 +9,96 @@ typedef struct {
     int side; // TOP=0, BOTTOM=1, LEFT=2, RIGHT=3
 } BoundaryPoint;
 
-double du_max,dv_max;
-double* d_u, d_v, d_p;
-double d_delta_t, d_delta_x, d_delta_y;
-double d_tau, d_gamma,d_Re;
-int* d_boundary_index;
-BoundaryPoint* d_boundary_indices;
-int di_max, dj_max;
+// arrays iniciadas em 0
 double* d_F, d_G;
-double* d_RHS;
-double dg_x, dg_y;
+double* d_RHS, d_res;
+double* d_u, d_v, d_p;
 
-void init_memory(int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, BoundaryPoint* h_boundary_indices) {
+// variaveis do device
+__device__ double d_delta_t, d_delta_x, d_delta_y, d_gamma;
+__device__ double du_max, dv_max;
+
+// variaveis tiradas do host
+int di_max, dj_max;
+double d_tau, d_Re;
+BoundaryPoint* d_boundary_indices;
+double dg_x, dg_y;
+double d_omega, d_epsilon;
+int d_max_it;
+
+void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
+                , double* omega, double* epsilon, int* max_it) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    cudaMalloc((void**)&du_max, sizeof(double));
-    cudaMalloc((void**)&dv_max, sizeof(double));
+    //variaveis de valor 0
     cudaMalloc((void**) &d_u , size);
     cudaMalloc((void**) &d_v , size);
     cudaMalloc((void**) &d_p , size);
-    cudaMalloc((void**) &d_Re , sizeof(double));
-    cudaMalloc((void**) &d_tau , sizeof(double));
-    cudaMalloc((void**) &d_gamma , sizeof(double));
-    cudaMalloc((void**) &d_delta_t , sizeof(double));
-    cudaMalloc((void**) &d_delta_x , sizeof(double));
-    cudaMalloc((void**) &d_delta_y , sizeof(double));
-    cudaMalloc((void**) &d_boundary_index , sizeof(int));
-    cudaMalloc((void**)&d_boundary_indices, total_points * sizeof(BoundaryPoint));
-    cudaMalloc((void**)&Re , sizeof(double));
-    cudaMalloc((void**)&d_RHS , size);
-    cudaMalloc((void**)&d_F , size);
-    cudaMalloc((void**)&d_G , size);
-    cudaMalloc((void**) &d_gy , sizeof(double));
-    cudaMalloc((void**) &d_gx , sizeof(double));
+    cudaMalloc((void**) &d_F , size);
+    cudaMalloc((void**) &d_G , size);
+    cudaMalloc((void**) &d_res , size);
+    cudaMalloc((void**) &d_RHS , size);
 
-    cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Re, &Re, sizeof(double), cudaMemcpyHostToDevice);
-    
     cudaMemset(d_u,0, sizeof(double));
     cudaMemset(d_v,0, sizeof(double));
     cudaMemset(d_p,0, sizeof(double));
     cudaMemset(d_F,0, sizeof(double));
     cudaMemset(d_G,0, sizeof(double));
+    cudaMemset(d_res,0, sizeof(double));
     cudaMemset(d_RHS,0, sizeof(double));
+    
+    // variaveis copiadas do host
 
-    cudaMemset(dv_max,0, sizeof(double));
-    cudaMemset(du_max,0, sizeof(double));
-    cudaMemset(d_tau,0, sizeof(double));
-    cudaMemset(d_gamma,0, sizeof(double));
-    cudaMemset(d_delta_t,0, sizeof(double));
-    cudaMemset(d_delta_x,0, sizeof(double));
-    cudaMemset(d_delta_y,0, sizeof(double));
-    cudaMemset(d_boundary_index,0, sizeof(int));
-    cudaMemset(d_boundary_indices,0, sizeof(BoundaryPoint));
+    cudaMalloc((void**) &d_tau , sizeof(double));
+    cudaMalloc((void**)&Re , sizeof(double));
+    cudaMalloc((void**)&di_max, sizeof(double));
+    cudaMalloc((void**)&dj_max, sizeof(double));
+    cudaMalloc((void**)&d_boundary_indices, total_points * sizeof(BoundaryPoint));
+    cudaMalloc((void**) &d_gx , sizeof(double));
+    cudaMalloc((void**) &d_gy , sizeof(double));
+    cudaMalloc((void**) &d_omega , sizeof(double));
+    cudaMalloc((void**) &d_epsilon , sizeof(double));
+    cudaMalloc((void**) &d_max_it , sizeof(double));
 
-    cudaMemset(d_RHS,0, sizeof(double));
-    cudaMemset(dg_x,0, sizeof(double));
-    cudaMemset(dg_y,0, sizeof(double));
+    
+    cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_omega, omega, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_epsilon, epsilon, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
+    cudaMemcpy(di_max, i_max, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(dj_max, j_max, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tau, tau, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Re, Re, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gx, g_x, sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gy, g_y, sizeof(double), cudaMemcpyHostToDevice);
+
+}
+
+
+__global__ void pick_max() {
+    du_max = d[0];
+    dv_max = d[1];
 }
 
 
 
-void orquestration(double** u, double** v, double** p, double** res, double** RHS, double** F, double** G,
-    int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, double g_x, double g_y,
-    double tau, double omega, double epsilon, int max_it, int n_print) {
+double orchestration(int i_max, int j_max) {
     
     int threads = 256;
     int blocks = (i_max * j_max + threads - 1) / threads;
     int size = i_max * j_max;
+
     extern __shared__ double shared_data[];
-    di_max = i_max;
-    dj_max = j_max;
     // acha o máximo da matriz u e v
     
-    double max_val_u;
-    double max_val_v;
 
-    //Checar como inicializar o max_val_u e max_val_v
     while (size > 1){
         blocks = (size + threads - 1) / threads;
-
-        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(i_max, j_max, u, d_u);
-        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(i_max, j_max, v, d_v);
+        pick_max<<<1, 1>>>();
         cudaDeviceSynchronize();
+        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(di_max, dj_max, d_u, du_max);
+        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(di_max, dj_max, d_v, dv_max);
+        cudaDeviceSynchronize();
+        size = size / threads;
     }
     
     min_and_gamma<<<1, 1>>>();
@@ -122,8 +130,8 @@ void orquestration(double** u, double** v, double** p, double** res, double** RH
     
     cudaMemcpy(&norm_p, d_norm_p, sizeof(double), cudaMemcpyDeviceToHost);
     double norm = sqrt(norm_p/ ((i_max) * (j_max)));
-
-    while(n < max_it) {
+    int it = 0;
+    while(it < max_it) {
         calculate_ghost<<<blocks, threads>>>();
 
         cudaDeviceSynchronize();
@@ -149,6 +157,7 @@ void orquestration(double** u, double** v, double** p, double** res, double** RH
         if(temp <= epsilon * (norm + 0.01)) {
             return 0;
         }
+        it++;
     }
 
     printf("SOR complete!\n");
@@ -157,14 +166,15 @@ void orquestration(double** u, double** v, double** p, double** res, double** RH
     printf("Velocities updated!\n");
     // update the velocities
 
-    double result[3];
+    double result[4];
     extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, i_max, j_max, result);
     cudaDeviceSynchronize();
 
     printf("U-CENTER: %.6f\n", result[0]);
     printf("V-CENTER: %.6f\n", result[1]);
     printf("P-CENTER: %.6f\n", result[2]);
-    
+
+    return result[3];
 }
 
 
@@ -172,17 +182,31 @@ __global__ void min_and_gamma (){
     double min = fmin(Re / 2.0 / ( 1.0 / d_delta_x / d_delta_x + 1.0 / d_delta_y / d_delta_y ), d_delta_x / fabs(du_max));
     min = fmin(min, d_delta_y / fabs(dv_max));
     min = fmin(min, 3.0);
-    d_delta_t = tau * min;
+    d_delta_t = d_tau * min;
     d_gamma = fmax(du_max * d_delta_t / d_delta_x, dv_max * d_delta_t / d_delta_y);
 }
 
 
-__global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val, double max_val_local) {
+__device__ double atomicMax(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        // Compara o valor atual (old) com o novo (val) como doubles
+        old = atomicCAS(address_as_ull, assumed, 
+                        __double_as_longlong(fmax(val, __longlong_as_double(assumed))));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+
+
+__global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
+    double max_val_local = (global_idx < i_max * j_max) ? arr[global_idx] : -1e30;
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
@@ -201,7 +225,7 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     }
 
     if (tid == 0) {
-        atomicMax(max_val, shared_data[0]);
+        atomicMaxDouble(&max_val[0], shared_data[0]);
     }
 }
 
@@ -384,7 +408,7 @@ __global__ void calculate_F(double* F, double* u, double* v, int i_max, int j_ma
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     // u and v must be d_u and d_v when this function is called
     if (i > 0 && i <= di_max && j > 0 && j <= dj_max) {
-        F[i * (dj_max + 2) + j] = u[i * (dj_max + 2) + j] + delta_t * ((1/Re) * (d2u_dx2(u, i, j, delta_x) + d2u_dy2(u, i, j, delta_y)) - du2_dx(u, v, i, j, delta_x, gamma) - duv_dy(u, v, i, j, delta_y, gamma) + g_x);
+        F[i * (dj_max + 2) + j] = u[i * (dj_max + 2) + j] + delta_t * ((1/Re) * (d2u_dx2(u, i, j, delta_x) + d2u_dy2(u, i, j, delta_y)) - du2_dx(u, v, i, j, delta_x, gamma, j_max) - duv_dy(u, v, i, j, delta_y, gamma) + g_x);
     }
 }
 
@@ -512,4 +536,5 @@ __global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int 
     result[0] = d_u[idx];
     result[1] = d_v[idx];
     result[2] = d_p[idx];
+    result[3] = d_delta_t;
 }

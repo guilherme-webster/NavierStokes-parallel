@@ -13,8 +13,7 @@
 
 #include "memory.h"
 #include "io.h"
-#include "integration.h"
-#include "boundaries.h"
+#include "kernel.h"
 
 #include <time.h>
 #include <math.h>
@@ -98,14 +97,13 @@ int main(int argc, char* argv[])
     int total_point;
     BoundaryPoint* boundary_points = generate_boundary_indices(i_max, j_max, &total_point);
 
-    init_memory(u, v, p, res, RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y, Re, boundary_points);
+    init_memory(i_max, j_max, boundary_points, total_point, &tau, &Re, &g_x, &g_y, &omega, &epsilon, &max_it);
+
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
-        orchestration(i_max, j_max, delta_t, delta_x, delta_y, Re,
-            g_x, g_y, tau, omega, epsilon, max_it, n_print, problem, f);
+        t += orchestration(i_max, j_max);
 
-        t += delta_t;
         n++;
     }
 
