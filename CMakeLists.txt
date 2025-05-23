@@ -14,13 +14,13 @@ include_directories(src)
 set(SOURCES
     src/serial/main.c
     src/serial/io.c
+    src/serial/boundaries.c
+    src/serial/integration.c
     src/serial/memory.c
 )
 set(CUDA_SOURCES
     src/parallel/main.cu
     src/parallel/io.cu
-    src/parallel/boundaries.cu
-    src/parallel/integration.cu
     src/parallel/memory.cu
 )
 
