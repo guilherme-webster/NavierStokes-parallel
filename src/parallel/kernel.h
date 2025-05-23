@@ -67,7 +67,7 @@ __global__ void residual_kernel(double* res, double* p, double* RHS, int i_max, 
 
 __global__ void update_velocity_kernel(double* u, double* v, double* p, int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 
-__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max, j_max, double* result);
+__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max,int j_max, double* result);
 
 #endif // __CUDACC__
 

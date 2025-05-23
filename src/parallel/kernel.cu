@@ -531,7 +531,7 @@ __global__ void update_velocity_kernel(double* u, double* v, double* p, int i_ma
     }
 }
 
-__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max, j_max, double* result) {
+__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max,int j_max, double* result) {
     int idx = (i_max / 2) * (j_max + 2) + (j_max / 2);
     result[0] = d_u[idx];
     result[1] = d_v[idx];
