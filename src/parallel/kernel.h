@@ -21,6 +21,8 @@ double orchestration(int i_max, int j_max);
 
 BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points);
 
+void free_memory_kernel();
+
 #ifdef __CUDACC__
 // Kernels CUDA
 

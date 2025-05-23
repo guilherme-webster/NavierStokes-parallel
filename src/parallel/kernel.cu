@@ -4,6 +4,25 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
 
+// Runtime CUDA error-checking
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(err); \
+        } \
+    } while(0)
+
+#define KERNEL_CHECK() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA kernel launch error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(err); \
+        } \
+    } while(0)
+
 // arrays iniciadas em 0
 __device__ double* d_F, *d_G;
 __device__ double* d_RHS, *d_res;
@@ -28,47 +47,47 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
                 , double* omega, double* epsilon, int* max_it) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
     //variaveis de valor 0
-    cudaMalloc((void**) &d_u , size);
-    cudaMalloc((void**) &d_v , size);
-    cudaMalloc((void**) &d_p , size);
-    cudaMalloc((void**) &d_F , size);
-    cudaMalloc((void**) &d_G , size);
-    cudaMalloc((void**) &d_res , size);
-    cudaMalloc((void**) &d_RHS , size);
-    cudaMalloc((void**) &du_max , sizeof(double));
-    cudaMalloc((void**) &dv_max , sizeof(double));
-    cudaMalloc((void**) &d_delta_t , sizeof(double));
-    cudaMalloc((void**) &d_delta_x , sizeof(double));
-    cudaMalloc((void**) &d_delta_y , sizeof(double));
-    cudaMalloc((void**) &d_gamma , sizeof(double));
-    cudaMalloc((void**) &d_norm_p , sizeof(double));
-    cudaMalloc((void**) &d_norm_res , sizeof(double));
+    CUDA_CHECK(cudaMalloc((void**)&d_u, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_v, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_p, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_F, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_G, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_res, size));
+    CUDA_CHECK(cudaMalloc((void**)&d_RHS, size));
+    CUDA_CHECK(cudaMalloc((void**)&du_max, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&dv_max, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_delta_t, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_delta_x, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_delta_y, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_gamma, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_norm_p, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_norm_res, sizeof(double)));
     
-    cudaMemset(d_u, 0, size);
-    cudaMemset(d_v, 0, size);
-    cudaMemset(d_p, 0, size);
-    cudaMemset(d_F, 0, size);
-    cudaMemset(d_G, 0, size);
-    cudaMemset(d_res, 0, size);
-    cudaMemset(d_RHS, 0, size);
+    CUDA_CHECK(cudaMemset(d_u, 0, size));
+    CUDA_CHECK(cudaMemset(d_v, 0, size));
+    CUDA_CHECK(cudaMemset(d_p, 0, size));
+    CUDA_CHECK(cudaMemset(d_F, 0, size));
+    CUDA_CHECK(cudaMemset(d_G, 0, size));
+    CUDA_CHECK(cudaMemset(d_res, 0, size));
+    CUDA_CHECK(cudaMemset(d_RHS, 0, size));
 
     // update device symbols for d_u and d_v so __device__ pointers are valid
     cudaMemcpyToSymbol(d_u, &d_u, sizeof(double*));
     cudaMemcpyToSymbol(d_v, &d_v, sizeof(double*));
 
     // variaveis copiadas do host
-    cudaMalloc((void**) &d_tau, sizeof(double));
-    cudaMalloc((void**) &d_Re, sizeof(double));
-    cudaMalloc((void**) &d_i_max, sizeof(int));
-    cudaMalloc((void**) &d_j_max, sizeof(int));
-    cudaMalloc((void**) &d_boundary_indices, total_points * sizeof(BoundaryPoint));
-    cudaMalloc((void**) &d_gx, sizeof(double));
-    cudaMalloc((void**) &d_gy, sizeof(double));
-    cudaMalloc((void**) &d_omega, sizeof(double));
-    cudaMalloc((void**) &d_epsilon, sizeof(double));
-    cudaMalloc((void**) &d_max_it, sizeof(int));
-    cudaMalloc((void**) &d_norm_p, sizeof(double));
-    cudaMalloc((void**) &d_norm_res, sizeof(double));
+    CUDA_CHECK(cudaMalloc((void**)&d_tau, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_Re, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_i_max, sizeof(int)));
+    CUDA_CHECK(cudaMalloc((void**)&d_j_max, sizeof(int)));
+    CUDA_CHECK(cudaMalloc((void**)&d_boundary_indices, total_points * sizeof(BoundaryPoint)));
+    CUDA_CHECK(cudaMalloc((void**)&d_gx, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_gy, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_omega, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_epsilon, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_max_it, sizeof(int)));
+    CUDA_CHECK(cudaMalloc((void**)&d_norm_p, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_norm_res, sizeof(double)));
 
     
     cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
@@ -85,9 +104,37 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
 }
 
 
+void free_memory_kernel() {
+    cudaFree(d_u);
+    cudaFree(d_v);
+    cudaFree(d_p);
+    cudaFree(d_F);
+    cudaFree(d_G);
+    cudaFree(d_RHS);
+    cudaFree(d_res);
+    cudaFree(d_boundary_indices);
+    cudaFree(d_tau);
+    cudaFree(d_Re);
+    cudaFree(d_i_max);
+    cudaFree(d_j_max);
+    cudaFree(d_gx);
+    cudaFree(d_gy);
+    cudaFree(d_omega);
+    cudaFree(d_epsilon);
+    cudaFree(d_max_it);
+    cudaFree(d_norm_p);
+    cudaFree(d_norm_res);
+
+}
+
+
 __global__ void pick_max() {
-    du_max = d_u[0];
-    dv_max = d_v[0];
+    // debug print first elements
+    double u0 = d_u[0];
+    double v0 = d_v[0];
+    printf("[pick_max] d_u[0]=%f, d_v[0]=%f\n", u0, v0);
+    du_max = u0;
+    dv_max = v0;
 }
 
 
@@ -102,18 +149,22 @@ double orchestration(int i_max, int j_max) {
     while (size > 1){
         blocks = (size + threads - 1) / threads;
         pick_max<<<1, 1>>>();
+        KERNEL_CHECK();
         cudaDeviceSynchronize();
         max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(*d_i_max, *d_j_max, d_u, d_norm_p);
         max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(*d_i_max, *d_j_max, d_v, d_norm_res);
+        KERNEL_CHECK();
         cudaDeviceSynchronize();
         size = size / threads;
     }
     
     min_and_gamma<<<1, 1>>>();
+    KERNEL_CHECK();
     
     cudaDeviceSynchronize();
 
     update_boundaries_kernel<<<blocks, threads>>>();
+    KERNEL_CHECK();
 
     cudaDeviceSynchronize();
 
@@ -122,6 +173,7 @@ double orchestration(int i_max, int j_max) {
     // now we calculate F and G
     calculate_F<<<blocks, threads>>>(d_F, d_u, d_v, *d_i_max, *d_j_max, *d_Re, *d_gx, d_delta_t, d_delta_x, d_delta_y, d_gamma);
     calculate_G<<<blocks, threads>>>(d_G, d_u, d_v, *d_i_max, *d_j_max, *d_Re, *d_gy, d_delta_t, d_delta_x, d_delta_y, d_gamma);    
+    KERNEL_CHECK();
 
     cudaDeviceSynchronize();
 
@@ -129,6 +181,7 @@ double orchestration(int i_max, int j_max) {
 
     // now we calculate rhs
     calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, *d_i_max, *d_j_max, d_delta_t, d_delta_x, d_delta_y);
+    KERNEL_CHECK();
 
     cudaDeviceSynchronize();
     
@@ -199,6 +252,8 @@ __global__ void min_and_gamma (){
     min = fmin(min, 3.0);
     d_delta_t = *d_tau * min;
     d_gamma = fmax(du_max * d_delta_t / d_delta_x, dv_max * d_delta_t / d_delta_y);
+    // debug print computed values
+    printf("[min_and_gamma] du_max=%f dv_max=%f d_delta_t=%f d_gamma=%f\n", du_max, dv_max, d_delta_t, d_gamma);
 }
 
 
