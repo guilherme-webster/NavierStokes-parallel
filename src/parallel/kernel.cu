@@ -144,7 +144,6 @@ __global__ void pick_max() {
     // debug print first elements
     double u0 = d_u[0];
     double v0 = d_v[0];
-    printf("[pick_max] d_u[0]=%f, d_v[0]=%f\n", u0, v0);
     du_max = u0;
     dv_max = v0;
 }
@@ -157,11 +156,10 @@ double orchestration(int i_max, int j_max) {
     int blocks = (i_max * j_max + threads - 1) / threads;
     int size = i_max * j_max;
 
-    LOG("enter orchestration");
     // acha o máximo da matriz u e v
     while (size > 1){
-        LOG("launch pick_max");
-        pick_max<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("pick_max"); LOG("pick_max complete");
+
+        pick_max<<<1,1>>>(); 
 
         LOG("launch max_reduce u");
         max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_norm_p);
@@ -302,11 +300,29 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
-    double max_val_local = (global_idx < i_max * j_max) ? arr[global_idx] : -1e30;
+    // debug: print block/thread info
+    if (tid == 0) {
+        printf("[max_reduce] Start block %d threads=%d stride=%d total_elements=%d\n", blockIdx.x, blockDim.x, stride, i_max*j_max);
+    }
+    __syncthreads();
 
+    double max_val_local;
+    if (global_idx < i_max * j_max) {
+        max_val_local = arr[global_idx];
+    } else {
+        max_val_local = -1e30;
+    }
+    // debug: each thread prints its initial value
+    printf("[max_reduce] block %d tid %d global_idx %d initial=%f\n", blockIdx.x, tid, global_idx, max_val_local);
+    __syncthreads();
+
+    // reduction loop
     for (int i = global_idx; i < i_max * j_max; i += stride) {
-        if (arr[i] > max_val_local) {
-            max_val_local = arr[i];
+        double v = arr[i];
+        if (v > max_val_local) {
+            max_val_local = v;
+            // debug: update
+            printf("[max_reduce] block %d tid %d found new_local_max=%f at idx=%d\n", blockIdx.x, tid, max_val_local, i);
         }
     }
 
@@ -314,14 +330,21 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s && shared_data[tid + s] > shared_data[tid]) {
-            shared_data[tid] = shared_data[tid + s];
+        if (tid < s) {
+            if (shared_data[tid + s] > shared_data[tid]) {
+                shared_data[tid] = shared_data[tid + s];
+                // debug: thread tid updates during tree reduction
+                printf("[max_reduce] block %d tid %d updated shared[%d]=%f\n", blockIdx.x, tid, tid, shared_data[tid]);
+            }
         }
         __syncthreads();
     }
 
     if (tid == 0) {
+        // debug: block result before atomic
+        printf("[max_reduce] block %d partial_max=%f before atomic\n", blockIdx.x, shared_data[0]);
         atomicMax(&max_val[0], shared_data[0]);
+        printf("[max_reduce] block %d after atomic global max_val=%f\n", blockIdx.x, max_val[0]);
     }
 }
 
