@@ -22,7 +22,6 @@ set(CUDA_SOURCES
     src/parallel/main.cu
     src/parallel/io.cu
     src/parallel/memory.cu
-    src/parallel/kernel.cu
 )
 
 # Define o executável
