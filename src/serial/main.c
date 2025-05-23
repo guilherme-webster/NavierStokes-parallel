@@ -145,19 +145,11 @@ int main(int argc, char* argv[])
         //     n_out++;
         // }
 
-        if (n % n_print == 0) {
-            // Instead of outputting to files, print the data to stdout
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-
-            // Printing some key values from u, v, p matrices
-            // For example, print central values and some boundary values
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
-
-            // Add more key values as needed
-            n_out++;
-        }
+        // Printing some key values from u, v, p matrices
+        // For example, print central values and some boundary values
+        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+        printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
 
         t += delta_t;
         n++;

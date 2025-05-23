@@ -95,81 +95,16 @@ int main(int argc, char* argv[])
     int n_out = 0;
 
     clock_t start = clock();
+    int total_points;
+    BoundaryPoint* boundary_points = generate_boundary_indices(i_max, j_max, &total_points);
 
+    init_memory(i_max, j_max, &delta_t, delta_x, delta_y, Re, boundary_points, total_points);
+    
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
-    	// Adaptive stepsize and weight factor for Donor-Cell
-        double u_max = max_mat(i_max, j_max, u);
-        double v_max = max_mat(i_max, j_max, v);
-    	delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
-        gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
-
-        // Set boundary conditions.
-        if (problem == 1) {
-            set_noslip(i_max, j_max, u, v, LEFT);
-            set_noslip(i_max, j_max, u, v, RIGHT);
-            set_noslip(i_max, j_max, u, v, BOTTOM);
-            set_inflow(i_max, j_max, u, v, TOP, 1.0, 0.0);
-        } else if (problem == 2) {
-            set_noslip(i_max, j_max, u, v, LEFT);
-            set_noslip(i_max, j_max, u, v, RIGHT);
-            set_noslip(i_max, j_max, u, v, BOTTOM);
-            set_inflow(i_max, j_max, u, v, TOP, sin(f*t), 0.0);           
-        } else {
-            printf("Unknown probem type (see parameters.txt).\n");
-            exit(EXIT_FAILURE);
-        }
-
-        printf("Conditions set!\n");
-
-        // Calculate F and G.
-        FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
-
-        printf("F, G calculated!\n");
-
-        // RHS of Poisson equation.
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
-            }
-        }
-        printf("RHS calculated!\n");
-
-        // Execute SOR step.
-        if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
-        printf("SOR complete!\n");
-
-        // Update velocities.
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                if (i <= i_max - 1) u[i][j] = F[i][j] - delta_t * dp_dx(p, i, j, delta_x);
-                if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
-            }
-        }
-        printf("Velocities updatet!\n");
-
-        // Print to file every ..th step.
-        // if (n % n_print == 0) {
-        //     char out_prefix[12];
-        //     sprintf(out_prefix, "out/%d", n_out);
-        //     output(i_max, j_max, u, v, p, t, a, b, out_prefix);
-        //     n_out++;
-        // }
-
-        if (n % n_print == 0) {
-            // Instead of outputting to files, print the data to stdout
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-
-            // Print some key values from u, v, p matrices
-            // For example, print central values and some boundary values
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
-
-            // Add more key values as needed
-            n_out++;
-        }
+        orquestration(i_max, j_max, delta_t, delta_x, delta_y, Re,
+            g_x, g_y, tau, omega, epsilon, max_it, n_print, problem, f);
 
         t += delta_t;
         n++;
