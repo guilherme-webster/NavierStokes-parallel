@@ -14,8 +14,6 @@ include_directories(src)
 set(SOURCES
     src/serial/main.c
     src/serial/io.c
-    src/serial/boundaries.c
-    src/serial/integration.c
     src/serial/memory.c
 )
 set(CUDA_SOURCES
