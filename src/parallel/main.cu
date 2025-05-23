@@ -28,30 +28,6 @@
 
 int main(int argc, char* argv[])
 {
-    printf("DEBUG: Programa iniciado\n");
-    printf("DEBUG: argc = %d\n", argc);
-    
-    for(int i = 0; i < argc; i++) {
-        printf("DEBUG: argv[%d] = %s\n", i, argv[i]);
-    }
-    
-    char* param_file = "parameters.txt";
-    if (argc > 1) {
-        param_file = argv[1];
-    }
-    
-    printf("DEBUG: Tentando abrir arquivo: %s\n", param_file);
-    
-    FILE* fp = fopen(param_file, "r");
-    if (fp == NULL) {
-        printf("DEBUG: ERRO ao abrir arquivo\n");
-        perror("fopen");
-        return -1;
-    }
-    
-    printf("DEBUG: Arquivo aberto com sucesso\n");
-    fclose(fp);
-    
     // Grid pointers.
 	double** u;     // velocity x-component
 	double** v;     // velocity y-component
@@ -79,6 +55,8 @@ int main(int argc, char* argv[])
     int problem;                        // problem type
     double f;                           // frequency of periodic boundary conditions (if problem == 2)
 
+    const char* param_file = "parameters.txt"; // file containing parameters
+
     // fprintf(stderr, "CUDA: Working directory test\n");
     
     // Test if we can open the file directly
@@ -99,15 +77,13 @@ int main(int argc, char* argv[])
     
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
-    printf("Initialized!\n");
-
+ 
     // Set step size in space.
     delta_x = a / i_max;
     delta_y = b / j_max;
 
     // Allocate memory for grids.
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated.\n");
 
     // Time loop.
     double t = 0;
