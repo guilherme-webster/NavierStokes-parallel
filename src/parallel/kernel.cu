@@ -297,31 +297,34 @@ __device__ double atomicAddDouble(double* address, double val) {
 __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
-    int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int stride = blockDim.x * gridDim.x;
+    int global_linear = blockIdx.x * blockDim.x + tid;
+    int stride       = blockDim.x * gridDim.x;
+    double local_max = -1e30;
+    int total_pts    = i_max * j_max;
 
-    double max_val_local = -1e5;
-
-    for (int i = global_idx; i < i_max * j_max; i += stride) {
-        if (arr[i] > max_val_local) {
-            max_val_local = arr[i];
-        }
+    // varre somente os pontos internos (1..i_max, 1..j_max)
+    for (int idx = global_linear; idx < total_pts; idx += stride) {
+        int ii = idx / j_max + 1;    // linha no domínio
+        int jj = idx % j_max + 1;    // coluna no domínio
+        double v = arr[ii * (j_max + 2) + jj];
+        local_max = fmax(local_max, v);
     }
 
-    shared_data[tid] = max_val_local;
-    printf("blk=%d tid=%d local_max=%f\n", blockIdx.x, tid, max_val_local);
+    // escreve no shared
+    shared_data[tid] = local_max;
     __syncthreads();
 
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s && shared_data[tid + s] > shared_data[tid]) {
-            shared_data[tid] = shared_data[tid + s];
+    // redução em árvore
+    for (int offset = blockDim.x >> 1; offset > 0; offset >>= 1) {
+        if (tid < offset) {
+            shared_data[tid] = fmax(shared_data[tid], shared_data[tid + offset]);
         }
         __syncthreads();
     }
 
-    if (tid==0) {
-      printf("blk=%d block_max=%f -> atomicMax\n", blockIdx.x, shared_data[0]);
-      atomicMax(&max_val[0], shared_data[0]);
+    // thread 0 faz atomicMax no valor global
+    if (tid == 0) {
+        atomicMax(max_val, shared_data[0]);
     }
 }
 
