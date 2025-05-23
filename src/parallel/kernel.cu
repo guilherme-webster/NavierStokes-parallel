@@ -35,6 +35,9 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     cudaMalloc((void**) &d_G , size);
     cudaMalloc((void**) &d_res , size);
     cudaMalloc((void**) &d_RHS , size);
+    cudaMalloc((void**) &du_max , sizeof(double));
+    cudaMalloc((void**) &dv_max , sizeof(double));
+
 
     cudaMemset(d_u, 0, size);
     cudaMemset(d_v, 0, size);
@@ -75,7 +78,7 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
 
 __global__ void pick_max() {
     du_max = d_u[0];
-    dv_max = d_v[1];
+    dv_max = d_v[0];
 }
 
 
