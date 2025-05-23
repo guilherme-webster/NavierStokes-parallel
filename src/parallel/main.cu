@@ -21,7 +21,11 @@
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
-
+typedef struct {
+    int i;
+    int j;
+    int side;
+} BoundaryPoint;
 /**
  * @brief Main function.
  * 
