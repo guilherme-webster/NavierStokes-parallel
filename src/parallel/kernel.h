@@ -23,6 +23,12 @@ BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points
 
 #ifdef __CUDACC__
 // Kernels CUDA
+void init_memory(int i_max, int j_max, BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y, double* omega, double* epsilon, int* max_it);
+
+double orchestration(int i_max, int j_max);
+
+BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points);
+
 __global__ void pick_max();
 
 __global__ void min_and_gamma();
