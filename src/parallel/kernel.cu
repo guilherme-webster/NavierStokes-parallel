@@ -22,33 +22,38 @@ double dg_x, dg_y;
 
 void init_memory(int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, BoundaryPoint* h_boundary_indices) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    cudaMalloc((void**)&du_max * sizeof(double));
-    cudaMalloc((void**)&dv_max * sizeof(double));
-    cudaMalloc((void**) d_u * size);
-    cudaMalloc((void**) d_v * size);
-    cudaMalloc((void**) d_p * size);
-    cudaMalloc((void*) d_Re * sizeof(double));
-    cudaMalloc((void*) d_tau * sizeof(double));
-    cudaMalloc((void*) d_gamma * sizeof(double));
-    cudaMalloc((void*) d_delta_t * sizeof(double));
-    cudaMalloc((void*) d_delta_x * sizeof(double));
-    cudaMalloc((void*) d_delta_y * sizeof(double));
-    cudaMalloc((void*) d_boundary_index * sizeof(int));
+    cudaMalloc((void**)&du_max, sizeof(double));
+    cudaMalloc((void**)&dv_max, sizeof(double));
+    cudaMalloc((void**) &d_u , size);
+    cudaMalloc((void**) &d_v , size);
+    cudaMalloc((void**) &d_p , size);
+    cudaMalloc((void**) &d_Re , sizeof(double));
+    cudaMalloc((void**) &d_tau , sizeof(double));
+    cudaMalloc((void**) &d_gamma , sizeof(double));
+    cudaMalloc((void**) &d_delta_t , sizeof(double));
+    cudaMalloc((void**) &d_delta_x , sizeof(double));
+    cudaMalloc((void**) &d_delta_y , sizeof(double));
+    cudaMalloc((void**) &d_boundary_index , sizeof(int));
     cudaMalloc((void**)&d_boundary_indices, total_points * sizeof(BoundaryPoint));
-    cudaMalloc((void*)Re * sizeof(double));
-    cudaMalloc((void**)d_RHS * size);
-    cudaMalloc((void**)d_F * size);
-    cudaMalloc((void**)d_G * size);
-    cudaMalloc((void*) d_gy * sizeof(double));
-    cudaMalloc((void*) d_gx * sizeof(double));
+    cudaMalloc((void**)&Re , sizeof(double));
+    cudaMalloc((void**)&d_RHS , size);
+    cudaMalloc((void**)&d_F , size);
+    cudaMalloc((void**)&d_G , size);
+    cudaMalloc((void**) &d_gy , sizeof(double));
+    cudaMalloc((void**) &d_gx , sizeof(double));
 
     cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_Re, &Re, sizeof(double), cudaMemcpyHostToDevice);
+    
     cudaMemset(d_u,0, sizeof(double));
     cudaMemset(d_v,0, sizeof(double));
     cudaMemset(d_p,0, sizeof(double));
+    cudaMemset(d_F,0, sizeof(double));
+    cudaMemset(d_G,0, sizeof(double));
+    cudaMemset(d_RHS,0, sizeof(double));
+
     cudaMemset(dv_max,0, sizeof(double));
     cudaMemset(du_max,0, sizeof(double));
-    cudaMemset(d_Re,0, sizeof(double));
     cudaMemset(d_tau,0, sizeof(double));
     cudaMemset(d_gamma,0, sizeof(double));
     cudaMemset(d_delta_t,0, sizeof(double));
@@ -56,8 +61,7 @@ void init_memory(int i_max, int j_max, double* delta_t, double delta_x, double d
     cudaMemset(d_delta_y,0, sizeof(double));
     cudaMemset(d_boundary_index,0, sizeof(int));
     cudaMemset(d_boundary_indices,0, sizeof(BoundaryPoint));
-    cudaMemset(d_F,0, sizeof(double));
-    cudaMemset(d_G,0, sizeof(double));
+
     cudaMemset(d_RHS,0, sizeof(double));
     cudaMemset(dg_x,0, sizeof(double));
     cudaMemset(dg_y,0, sizeof(double));
@@ -76,6 +80,11 @@ void orquestration(double** u, double** v, double** p, double** res, double** RH
     di_max = i_max;
     dj_max = j_max;
     // acha o máximo da matriz u e v
+    
+    double max_val_u;
+    double max_val_v;
+
+    //Checar como inicializar o max_val_u e max_val_v
     while (size > 1){
         blocks = (size + threads - 1) / threads;
 
@@ -168,12 +177,12 @@ __global__ void min_and_gamma (){
 }
 
 
-__global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
+__global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val, double max_val_local) {
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
-    double max_val_local = 0.0;
+
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
