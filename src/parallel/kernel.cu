@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 // arrays iniciadas em 0
--__device__ double* d_F, *d_G;
+__device__ double* d_F, *d_G;
 __device__ double* d_RHS, *d_res;
 __device__ double* d_u, *d_v, *d_p;
 
