@@ -95,15 +95,14 @@ int main(int argc, char* argv[])
     int n_out = 0;
 
     clock_t start = clock();
-    int total_points;
-    BoundaryPoint* boundary_points = generate_boundary_indices(i_max, j_max, &total_points);
+    int total_point;
+    BoundaryPoint* boundary_points = generate_boundary_indices(i_max, j_max, &total_point);
 
-    init_memory(i_max, j_max, &delta_t, delta_x, delta_y, Re, boundary_points, total_points);
-    
+    init_memory(u, v, p, res, RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y, Re, boundary_points);
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
-        orquestration(i_max, j_max, delta_t, delta_x, delta_y, Re,
+        orchestration(i_max, j_max, delta_t, delta_x, delta_y, Re,
             g_x, g_y, tau, omega, epsilon, max_it, n_print, problem, f);
 
         t += delta_t;

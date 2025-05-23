@@ -9,188 +9,153 @@ typedef struct {
     int side; // TOP=0, BOTTOM=1, LEFT=2, RIGHT=3
 } BoundaryPoint;
 
-double* du_max;
-double* dv_max;
-double* d_u, *d_v, *d_p;
-double* d_delta_t, *d_delta_x, *d_delta_y;
-double* d_tau, *d_gamma, *d_Re;
+double du_max,dv_max;
+double* d_u, d_v, d_p;
+double d_delta_t, d_delta_x, d_delta_y;
+double d_tau, d_gamma,d_Re;
 int* d_boundary_index;
 BoundaryPoint* d_boundary_indices;
 int di_max, dj_max;
-double* d_F, *d_G;
+double* d_F, d_G;
 double* d_RHS;
-double* dg_x, *dg_y;
-double* d_norm_p;
-double* d_norm_res;
-double norm_p, norm_res;
+double dg_x, dg_y;
 
-void init_memory(int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, BoundaryPoint* h_boundary_indices, int total_points) {
+void init_memory(int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, BoundaryPoint* h_boundary_indices) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    size_t size_v = (i_max + 2) * (j_max + 1) * sizeof(double);
-    
-    cudaMalloc((void**)&du_max, sizeof(double));
-    cudaMalloc((void**)&dv_max, sizeof(double));
-    cudaMalloc((void**)&d_u, size);
-    cudaMalloc((void**)&d_v, size_v); // Different size for v due to staggered grid
-    cudaMalloc((void**)&d_p, size);
-    cudaMalloc((void**)&d_Re, sizeof(double));
-    cudaMalloc((void**)&d_tau, sizeof(double));
-    cudaMalloc((void**)&d_gamma, sizeof(double));
-    cudaMalloc((void**)&d_delta_t, sizeof(double));
-    cudaMalloc((void**)&d_delta_x, sizeof(double));
-    cudaMalloc((void**)&d_delta_y, sizeof(double));
-    cudaMalloc((void**)&d_boundary_index, sizeof(int));
+    cudaMalloc((void**)&du_max * sizeof(double));
+    cudaMalloc((void**)&dv_max * sizeof(double));
+    cudaMalloc((void**) d_u * size);
+    cudaMalloc((void**) d_v * size);
+    cudaMalloc((void**) d_p * size);
+    cudaMalloc((void*) d_Re * sizeof(double));
+    cudaMalloc((void*) d_tau * sizeof(double));
+    cudaMalloc((void*) d_gamma * sizeof(double));
+    cudaMalloc((void*) d_delta_t * sizeof(double));
+    cudaMalloc((void*) d_delta_x * sizeof(double));
+    cudaMalloc((void*) d_delta_y * sizeof(double));
+    cudaMalloc((void*) d_boundary_index * sizeof(int));
     cudaMalloc((void**)&d_boundary_indices, total_points * sizeof(BoundaryPoint));
-    cudaMalloc((void**)&d_RHS, size);
-    cudaMalloc((void**)&d_F, size);
-    cudaMalloc((void**)&d_G, size_v);
-    cudaMalloc((void**)&dg_x, sizeof(double));
-    cudaMalloc((void**)&dg_y, sizeof(double));
+    cudaMalloc((void*)Re * sizeof(double));
+    cudaMalloc((void**)d_RHS * size);
+    cudaMalloc((void**)d_F * size);
+    cudaMalloc((void**)d_G * size);
+    cudaMalloc((void*) d_gy * sizeof(double));
+    cudaMalloc((void*) d_gx * sizeof(double));
 
-    // Copy values to device
     cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_t, delta_t, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Re, &Re, sizeof(double), cudaMemcpyHostToDevice);
-    
-    // Initialize with zeros
-    cudaMemset(d_u, 0, size);
-    cudaMemset(d_v, 0, size_v);
-    cudaMemset(d_p, 0, size);
-    cudaMemset(du_max, 0, sizeof(double));
-    cudaMemset(dv_max, 0, sizeof(double));
-    cudaMemset(d_tau, 0, sizeof(double));
-    cudaMemset(d_gamma, 0, sizeof(double));
-    cudaMemset(d_boundary_index, 0, sizeof(int));
-    cudaMemset(d_F, 0, size);
-    cudaMemset(d_G, 0, size_v);
-    cudaMemset(d_RHS, 0, size);
-    cudaMemset(dg_x, 0, sizeof(double));
-    cudaMemset(dg_y, 0, sizeof(double));
-    
-    // Check for errors
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA Error in init_memory: %s\n", cudaGetErrorString(err));
-    }
+    cudaMemset(d_u,0, sizeof(double));
+    cudaMemset(d_v,0, sizeof(double));
+    cudaMemset(d_p,0, sizeof(double));
+    cudaMemset(dv_max,0, sizeof(double));
+    cudaMemset(du_max,0, sizeof(double));
+    cudaMemset(d_Re,0, sizeof(double));
+    cudaMemset(d_tau,0, sizeof(double));
+    cudaMemset(d_gamma,0, sizeof(double));
+    cudaMemset(d_delta_t,0, sizeof(double));
+    cudaMemset(d_delta_x,0, sizeof(double));
+    cudaMemset(d_delta_y,0, sizeof(double));
+    cudaMemset(d_boundary_index,0, sizeof(int));
+    cudaMemset(d_boundary_indices,0, sizeof(BoundaryPoint));
+    cudaMemset(d_F,0, sizeof(double));
+    cudaMemset(d_G,0, sizeof(double));
+    cudaMemset(d_RHS,0, sizeof(double));
+    cudaMemset(dg_x,0, sizeof(double));
+    cudaMemset(dg_y,0, sizeof(double));
 }
 
 
 
-void orquestration(int i_max, int j_max, double delta_t, double delta_x, double delta_y, double Re,
-    double g_x, double g_y, double tau, double omega, double epsilon, int max_it, int n_print) {
+void orquestration(double** u, double** v, double** p, double** res, double** RHS, double** F, double** G,
+    int i_max, int j_max, double* delta_t, double delta_x, double delta_y, double Re, double g_x, double g_y,
+    double tau, double omega, double epsilon, int max_it, int n_print) {
     
-    int threads = 16; // Using 16x16 thread blocks for 2D grid
-    dim3 block(threads, threads);
-    dim3 grid((i_max + block.x - 1) / block.x, (j_max + block.y - 1) / block.y);
-    
+    int threads = 256;
+    int blocks = (i_max * j_max + threads - 1) / threads;
+    int size = i_max * j_max;
+    extern __shared__ double shared_data[];
     di_max = i_max;
     dj_max = j_max;
+    // acha o máximo da matriz u e v
+    while (size > 1){
+        blocks = (size + threads - 1) / threads;
+
+        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(i_max, j_max, u, d_u);
+        max_reduce_kernel<<<blocks, threads, threads * sizeof(double)>>>(i_max, j_max, v, d_v);
+        cudaDeviceSynchronize();
+    }
     
-    // Copy necessary parameters to device
-    cudaMemcpy(d_tau, &tau, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(dg_x, &g_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(dg_y, &g_y, sizeof(double), cudaMemcpyHostToDevice);
-    
-    // Allocate memory for reduction results
-    cudaMalloc((void**)&d_norm_p, sizeof(double));
-    cudaMalloc((void**)&d_norm_res, sizeof(double));
-    
-    // Initialize to 0
-    cudaMemset(d_norm_p, 0, sizeof(double));
-    cudaMemset(d_norm_res, 0, sizeof(double));
-    
-    // Find maximum values in u and v matrices
-    max_reduce_kernel<<<grid, block, threads * threads * sizeof(double)>>>(i_max, j_max, d_u, du_max);
-    max_reduce_kernel<<<grid, block, threads * threads * sizeof(double)>>>(i_max, j_max, d_v, dv_max);
-    cudaDeviceSynchronize();
-    
-    // Calculate gamma and other parameters
     min_and_gamma<<<1, 1>>>();
+    
     cudaDeviceSynchronize();
 
-    // Update boundary conditions
-    update_boundaries_kernel<<<grid, block>>>();
+    update_boundaries_kernel<<<blocks, threads>>>();
+
     cudaDeviceSynchronize();
 
     printf("Conditions set!\n");
 
-    // Calculate F and G matrices
-    calculate_F<<<grid, block>>>(d_F, d_u, d_v, i_max, j_max, d_Re, dg_x, d_delta_t, d_delta_x, d_delta_y, d_gamma);
-    calculate_G<<<grid, block>>>(d_G, d_u, d_v, i_max, j_max, d_Re, dg_y, d_delta_t, d_delta_x, d_delta_y, d_gamma);    
+    // now we calculate F and G
+    calculate_F<<<blocks, threads>>>(d_F, d_u, d_v, di_max, dj_max, d_Re, dg_x, d_delta_t, d_delta_x, d_delta_y, d_gamma);
+    calculate_G<<<blocks, threads>>>(d_G, d_u, d_v, di_max, dj_max, d_Re, dg_y, d_delta_t, d_delta_x, d_delta_y, d_gamma);    
+
     cudaDeviceSynchronize();
 
     printf("F, G calculated!\n");
 
-    // Calculate right-hand side of pressure equation
-    calculate_RHS<<<grid, block>>>(d_RHS, d_F, d_G, d_u, d_v, i_max, j_max, d_delta_t, d_delta_x, d_delta_y);
+    // now we calculate rhs
+    calculate_RHS<<<blocks, threads>>>(RHS, F, G, d_u, d_v, di_max, dj_max, d_delta_t, d_delta_x, d_delta_y);
+
     cudaDeviceSynchronize();
     
-    // Calculate L2 norm of pressure
-    cudaMemset(d_norm_p, 0, sizeof(double));
-    L2_norm<<<grid, block>>>(d_norm_p, d_p, i_max, j_max);
+    L2_norm<<<blocks, threads>>>(d_norm_p, d_p, di_max, dj_max);
+    
     cudaDeviceSynchronize();
     
     cudaMemcpy(&norm_p, d_norm_p, sizeof(double), cudaMemcpyDeviceToHost);
-    double norm = sqrt(norm_p / ((i_max) * (j_max)));
-    int it = 0;
-    
-    // Solve pressure Poisson equation using SOR
-    while(it < max_it) {
-        // Update ghost cells for pressure
-        calculate_ghost<<<grid, block>>>();
+    double norm = sqrt(norm_p/ ((i_max) * (j_max)));
+
+    while(n < max_it) {
+        calculate_ghost<<<blocks, threads>>>();
+
         cudaDeviceSynchronize();
 
-        printf("RHS calculated! Iteration: %d\n", it);
+        printf("RHS calculated!\n");
+        // Now execute de SOR black and red
+        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, di_max, dj_max, d_delta_x, d_delta_y, omega);
         
-        // Red-Black SOR iterations
-        red_kernel<<<grid, block>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, d_delta_x, d_delta_y, omega);
         cudaDeviceSynchronize();
 
-        black_kernel<<<grid, block>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, d_delta_x, d_delta_y, omega);
+        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, di_max, dj_max, d_delta_x, d_delta_y, omega);
+
         cudaDeviceSynchronize();
     
-        // Calculate residual
-        cudaMemset(d_norm_res, 0, sizeof(double));
-        residual_kernel<<<grid, block>>>(d_RHS, d_p, d_RHS, i_max, j_max, d_delta_x, d_delta_y);
+        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, di_max, dj_max, d_delta_x, d_delta_y);
+        
         cudaDeviceSynchronize();
 
-        L2_norm<<<grid, block>>>(d_norm_res, d_RHS, i_max, j_max);
+        L2_norm<<<blocks, threads>>>(d_norm_res, d_res, di_max, dj_max);
         cudaDeviceSynchronize();
-        
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
-        
-        // Check convergence
         if(temp <= epsilon * (norm + 0.01)) {
             return 0;
         }
-        
-        it++;
     }
 
     printf("SOR complete!\n");
-    
-    // Update velocities based on pressure gradient
-    // check if i_max and j_max are correct
-    update_velocity_kernel<<<grid, block>>>(d_u, d_v, d_p, i_max, j_max, d_delta_t, d_delta_x, d_delta_y);
+    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, di_max, dj_max, d_delta_t, d_delta_x, d_delta_y);
     cudaDeviceSynchronize();
     printf("Velocities updated!\n");
+    // update the velocities
 
-    // Extract center values for output
-    double* result;
-    cudaMalloc((void**)&result, 3 * sizeof(double));
+    double result[3];
     extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, i_max, j_max, result);
     cudaDeviceSynchronize();
-    
-    double h_result[3];
-    cudaMemcpy(h_result, result, 3 * sizeof(double), cudaMemcpyDeviceToHost);
-    cudaFree(result);
 
-    printf("U-CENTER: %.6f\n", h_result[0]);
-    printf("V-CENTER: %.6f\n", h_result[1]);
-    printf("P-CENTER: %.6f\n", h_result[2]);
+    printf("U-CENTER: %.6f\n", result[0]);
+    printf("V-CENTER: %.6f\n", result[1]);
+    printf("P-CENTER: %.6f\n", result[2]);
+    
 }
 
 
@@ -410,7 +375,7 @@ __global__ void calculate_F(double* F, double* u, double* v, int i_max, int j_ma
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     // u and v must be d_u and d_v when this function is called
     if (i > 0 && i <= di_max && j > 0 && j <= dj_max) {
-        F[i * (dj_max + 2) + j] = u[i * (dj_max + 2) + j] + delta_t * ((1/Re) * (d2u_dx2(u, i, j, delta_x) + d2u_dy2(u, i, j, delta_y)) - du2_dx(u, v, i, j, delta_x, gamma, j_max) - duv_dy(u, v, i, j, delta_y, gamma) + g_x);
+        F[i * (dj_max + 2) + j] = u[i * (dj_max + 2) + j] + delta_t * ((1/Re) * (d2u_dx2(u, i, j, delta_x) + d2u_dy2(u, i, j, delta_y)) - du2_dx(u, v, i, j, delta_x, gamma) - duv_dy(u, v, i, j, delta_y, gamma) + g_x);
     }
 }
 
@@ -442,14 +407,12 @@ __global__ void red_kernel(double* p, double* RHS, double* u, double* v, int i_m
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     double dxdx = delta_x * delta_x;
     double dydy = delta_y * delta_y;
-    
-    if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
-        if ((i + j) % 2 == 0) {  // Red points
-            p[i * (j_max + 2) + j] = (1 - omega) * p[i * (j_max + 2) + j] +
+    if (i > 0 && i <= di_max && j > 0 && j <= dj_max) {
+        if ((i + j) % 2 == 0) {
+            p[i * (dj_max + 2) + j] = (1 - omega) * p[i * (dj_max + 2) + j] +
                 omega / (2.0 * (1.0/ dxdx + 1.0 /dydy))*
-                ((p[(i+1) * (j_max + 2) + j] + p[(i-1) * (j_max + 2) + j]) / dxdx + 
-                 (p[i * (j_max + 2) + (j+1)] + p[i * (j_max + 2) + (j-1)]) / dydy -
-                RHS[i * (j_max + 2) + j]);
+                ((p[(i+1) * (dj_max + 2) + j] + p[(i-1) * (dj_max + 2) + j]) / dxdx + (p[i * (dj_max + 2) + (j+1)] + p[i * (dj_max + 2) + (j-1)]) / dydy -
+                RHS[i * (dj_max + 2) + j]);
         }
     }
 }
@@ -459,16 +422,13 @@ __global__ void black_kernel(double* p, double* RHS, double* u, double* v, int i
     double delta_x, double delta_y, double omega) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    double dxdx = delta_x * delta_x;
-    double dydy = delta_y * delta_y;
 
-    if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
-        if ((i + j) % 2 == 1) {  // Black points
-            p[i * (j_max + 2) + j] = (1 - omega) * p[i * (j_max + 2) + j] +
+    if (i > 0 && i <= di_max && j > 0 && j <= dj_max) {
+        if ((i + j) % 2 == 1) {
+            p[i * (dj_max + 2) + j] = (1 - omega) * p[i * (dj_max + 2) + j] +
                 omega / (2.0 * (1.0/ dxdx + 1.0 /dydy))*
-                ((p[(i+1) * (j_max + 2) + j] + p[(i-1) * (j_max + 2) + j]) / dxdx + 
-                 (p[i * (j_max + 2) + (j+1)] + p[i * (j_max + 2) + (j-1)]) / dydy -
-                RHS[i * (j_max + 2) + j]);
+                ((p[(i+1) * (dj_max + 2) + j] + p[(i-1) * (dj_max + 2) + j]) / dxdx + (p[i * (dj_max + 2) + (j+1)] + p[i * (dj_max + 2) + (j-1)]) / dydy -
+                RHS[i * (dj_max + 2) + j]);
         }
     }
 }
@@ -476,15 +436,13 @@ __global__ void black_kernel(double* p, double* RHS, double* u, double* v, int i
 
 __global__ void calculate_ghost() {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_points = 2 * (di_max + dj_max);
-    
-    if (tid >= total_points) return;
+    if (tid >= 2 * (di_max + dj_max)) return;
     
     BoundaryPoint point = d_boundary_indices[tid];
     int i = point.i;
     int j = point.j;
     
-    // Apply Neumann boundary conditions for pressure (zero gradient at boundary)
+    // Tratar condições de contorno de Neumann para pressão (gradiente zero)
     switch (point.side) {
         case 0: // TOP (j = j_max)
             // p[i][j_max+1] = p[i][j_max]
@@ -503,7 +461,7 @@ __global__ void calculate_ghost() {
             
         case 3: // RIGHT (i = i_max+1)
             // p[i_max+1][j] = p[i_max][j]
-            d_p[(di_max + 1) * (dj_max + 2) + j] = d_p[di_max * (dj_max + 2) + j];
+            d_p[(i_max + 1) * (dj_max + 2) + j] = d_p[i_max * (dj_max + 2) + j];
             break;
     }
 }
@@ -540,7 +498,7 @@ __global__ void update_velocity_kernel(double* u, double* v, double* p, int i_ma
     }
 }
 
-__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max, int j_max, double* result) {
+__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max, j_max, double* result) {
     int idx = (i_max / 2) * (j_max + 2) + (j_max / 2);
     result[0] = d_u[idx];
     result[1] = d_v[idx];
