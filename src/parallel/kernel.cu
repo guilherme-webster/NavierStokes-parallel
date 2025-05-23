@@ -36,24 +36,24 @@
   } while(0)
 
 // arrays iniciadas em 0
-static double* d_F; static double* d_G;
-static double* d_RHS; static double* d_res;
-static double* d_u; static double* d_v; static double* d_p;
+__device__ double* d_F, *d_G;
+__device__ double* d_RHS, *d_res;
+__device__ double* d_u, *d_v, *d_p;
 
-// variáveis de escala e máximos
-static double d_delta_t; static double d_delta_x; static double d_delta_y; static double d_gamma;
-static double du_max; static double dv_max;
+// variaveis do device
+__device__ double d_delta_t, d_delta_x, d_delta_y, d_gamma;
+__device__ double du_max, dv_max;
 
-// ponteiros de configuração do host
-static int* d_i_max; static int* d_j_max;
-static double* d_tau; static double* d_Re;
-static BoundaryPoint* d_boundary_indices;
-static double* d_gx; static double* d_gy;
-static double* d_omega; static double* d_epsilon;
-static int* d_max_it;
+// variaveis tiradas do host (device pointers)
+__device__ int* d_i_max, *d_j_max;
+__device__ double* d_tau, *d_Re;
+__device__ BoundaryPoint* d_boundary_indices;
+__device__ double* d_gx, *d_gy;
+__device__ double* d_omega, *d_epsilon;
+__device__ int* d_max_it;
 
 // variables for norms
-static double* d_norm_p; static double* d_norm_res;
+double* d_norm_p, *d_norm_res;
 
 void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
                 , double* omega, double* epsilon, int* max_it) {
@@ -82,6 +82,10 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMemset(d_G, 0, size));
     CUDA_CHECK(cudaMemset(d_res, 0, size));
     CUDA_CHECK(cudaMemset(d_RHS, 0, size));
+
+    // update device symbols for d_u and d_v so __device__ pointers are valid
+    cudaMemcpyToSymbol(d_u, &d_u, sizeof(double*));
+    cudaMemcpyToSymbol(d_v, &d_v, sizeof(double*));
 
     // variaveis copiadas do host
     CUDA_CHECK(cudaMalloc((void**)&d_tau, sizeof(double)));
@@ -249,7 +253,7 @@ double orchestration(int i_max, int j_max) {
 
 
 __global__ void min_and_gamma (){
-    double min = fmin(*d_Re / 2.0 /  ( 1.0 / d_delta_x / d_delta_x + 1.0 / d_delta_y / d_delta_y ), d_delta_x / fabs(du_max));
+    double min = fmin(*d_Re / 2.0 / ( 1.0 / d_delta_x / d_delta_x + 1.0 / d_delta_y / d_delta_y ), d_delta_x / fabs(du_max));
     min = fmin(min, d_delta_y / fabs(dv_max));
     min = fmin(min, 3.0);
     d_delta_t = *d_tau * min;

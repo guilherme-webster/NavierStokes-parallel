@@ -14,6 +14,32 @@ typedef struct{
     int side;
 } BoundaryPoint;
 
+// Global data pointers (defined in kernel.cu)
+extern double* d_u;
+extern double* d_v;
+extern double* d_p;
+extern double* d_F;
+extern double* d_G;
+extern double* d_RHS;
+extern double* d_res;
+extern double* d_norm_p;
+extern double* d_norm_res;
+extern double* d_tau;
+extern double* d_Re;
+extern int*    d_i_max;
+extern int*    d_j_max;
+extern double* d_gx;
+extern double* d_gy;
+extern double* d_omega;
+extern double* d_epsilon;
+extern int*    d_max_it;
+extern double* d_du_max;
+extern double* d_dv_max;
+extern double  d_delta_t;
+extern double  d_delta_x;
+extern double  d_delta_y;
+extern double  d_gamma;
+
 // Função host
 void init_memory(int i_max, int j_max, BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y, double* omega, double* epsilon, int* max_it);
 
