@@ -24,55 +24,128 @@ __device__ int* d_max_it;
 // variables for norms
 double* d_norm_p, *d_norm_res;
 
-void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
+void init_memory(int i_max, int j_max, BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
                 , double* omega, double* epsilon, int* max_it) {
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
-    //variaveis de valor 0
-    cudaMalloc((void**) &d_u , size);
-    cudaMalloc((void**) &d_v , size);
-    cudaMalloc((void**) &d_p , size);
-    cudaMalloc((void**) &d_F , size);
-    cudaMalloc((void**) &d_G , size);
-    cudaMalloc((void**) &d_res , size);
-    cudaMalloc((void**) &d_RHS , size);
-    cudaMalloc((void**) &du_max , sizeof(double));
-    cudaMalloc((void**) &dv_max , sizeof(double));
+    cudaError_t err;
 
-
-    cudaMemset(d_u, 0, size);
-    cudaMemset(d_v, 0, size);
-    cudaMemset(d_p, 0, size);
-    cudaMemset(d_F, 0, size);
-    cudaMemset(d_G, 0, size);
-    cudaMemset(d_res, 0, size);
-    cudaMemset(d_RHS, 0, size);
+    // Variables initialized to 0
+    err = cudaMalloc((void**) &d_u, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_u): %s\n", cudaGetErrorString(err));
     
-    // variaveis copiadas do host
-    cudaMalloc((void**) &d_tau, sizeof(double));
-    cudaMalloc((void**) &d_Re, sizeof(double));
-    cudaMalloc((void**) &d_i_max, sizeof(int));
-    cudaMalloc((void**) &d_j_max, sizeof(int));
-    cudaMalloc((void**) &d_boundary_indices, total_points * sizeof(BoundaryPoint));
-    cudaMalloc((void**) &d_gx, sizeof(double));
-    cudaMalloc((void**) &d_gy, sizeof(double));
-    cudaMalloc((void**) &d_omega, sizeof(double));
-    cudaMalloc((void**) &d_epsilon, sizeof(double));
-    cudaMalloc((void**) &d_max_it, sizeof(int));
-    cudaMalloc((void**) &d_norm_p, sizeof(double));
-    cudaMalloc((void**) &d_norm_res, sizeof(double));
-
+    err = cudaMalloc((void**) &d_v, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_v): %s\n", cudaGetErrorString(err));
     
-    cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_omega, omega, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_epsilon, epsilon, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_i_max, &i_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_j_max, &j_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_tau, tau, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Re, Re, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_gx, g_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_gy, g_y, sizeof(double), cudaMemcpyHostToDevice);
+    err = cudaMalloc((void**) &d_p, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_p): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_F, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_F): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_G, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_G): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_res, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_res): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_RHS, size);
+    if (err != cudaSuccess) printf("CUDA malloc error (d_RHS): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &du_max, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (du_max): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &dv_max, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (dv_max): %s\n", cudaGetErrorString(err));
 
+    // Memory set operations
+    err = cudaMemset(d_u, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_u): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_v, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_v): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_p, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_p): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_F, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_F): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_G, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_G): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_res, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_res): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemset(d_RHS, 0, size);
+    if (err != cudaSuccess) printf("CUDA memset error (d_RHS): %s\n", cudaGetErrorString(err));
+    
+    // Host variables to be copied to device
+    err = cudaMalloc((void**) &d_tau, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_tau): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_Re, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_Re): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_i_max, sizeof(int));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_i_max): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_j_max, sizeof(int));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_j_max): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_boundary_indices, total_points * sizeof(BoundaryPoint));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_boundary_indices): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_gx, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_gx): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_gy, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_gy): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_omega, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_omega): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_epsilon, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_epsilon): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_max_it, sizeof(int));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_max_it): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_norm_p, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_norm_p): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMalloc((void**) &d_norm_res, sizeof(double));
+    if (err != cudaSuccess) printf("CUDA malloc error (d_norm_res): %s\n", cudaGetErrorString(err));
+
+    // Memory copy operations
+    err = cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_max_it): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_omega, omega, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_omega): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_epsilon, epsilon, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_epsilon): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_boundary_indices): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_i_max, &i_max, sizeof(int), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_i_max): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_j_max, &j_max, sizeof(int), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_j_max): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_tau, tau, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_tau): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_Re, Re, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_Re): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_gx, g_x, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_gx): %s\n", cudaGetErrorString(err));
+    
+    err = cudaMemcpy(d_gy, g_y, sizeof(double), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) printf("CUDA memcpy error (d_gy): %s\n", cudaGetErrorString(err));
 }
 
 
