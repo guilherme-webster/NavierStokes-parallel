@@ -154,7 +154,7 @@ double orchestration(int i_max, int j_max) {
         CUDA_CHECK(cudaMemset(du_max, 0, sizeof(double)));
         CUDA_CHECK(cudaMemset(dv_max, 0, sizeof(double)));
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,du_max);
+        max_reduce_kernel<<<blocks,threads>>>(*d_i_max,*d_j_max,d_u,du_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
