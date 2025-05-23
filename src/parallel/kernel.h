@@ -30,6 +30,8 @@ __global__ void min_and_gamma();
 
 __device__ double atomicMax(double* address, double val);
 
+__device__ double atomicAddDouble(double* address, double val);
+
 __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val);
 
 __global__ void update_boundaries_kernel();

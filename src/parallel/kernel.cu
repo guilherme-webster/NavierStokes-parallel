@@ -202,6 +202,17 @@ __device__ double atomicMax(double* address, double val) {
     return __longlong_as_double(old);
 }
 
+__device__ double atomicAddDouble(double* address, double val) {
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+}
+
 
 __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
     extern __shared__ double shared_data[];
@@ -511,7 +522,7 @@ __global__ void L2_norm(double* norm, double* m, int i_max, int j_max) {
     if (tid >= i_max * j_max) return;
 
     double value = m[tid];
-    atomicAdd(norm, value * value);
+    atomicAddDouble(norm, value * value);
 }
 
 
