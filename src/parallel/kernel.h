@@ -26,8 +26,6 @@ void free_memory_kernel();
 #ifdef __CUDACC__
 // Kernels CUDA
 
-__global__ void pick_max();
-
 __global__ void min_and_gamma();
 
 __device__ double atomicMax(double* address, double val);

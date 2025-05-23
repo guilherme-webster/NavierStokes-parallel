@@ -140,16 +140,6 @@ void free_memory_kernel() {
 }
 
 
-__global__ void pick_max() {
-    // debug print first elements
-    double u0 = d_u[0];
-    double v0 = d_v[0];
-    du_max = u0;
-    dv_max = v0;
-}
-
-
-
 double orchestration(int i_max, int j_max) {
     
     int threads = 256;
@@ -158,19 +148,22 @@ double orchestration(int i_max, int j_max) {
 
     // acha o máximo da matriz u e v
     while (size > 1){
-
-        pick_max<<<1,1>>>(); 
-
+        double* du_max, *dv_max;
+        CUDA_CHECK(cudaMalloc((void**)&du_max, sizeof(double)));
+        CUDA_CHECK(cudaMalloc((void**)&dv_max, sizeof(double)));
+        CUDA_CHECK(cudaMemset(du_max, -1000000, sizeof(double)));
+        CUDA_CHECK(cudaMemset(dv_max, -1000000, sizeof(double)));
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_norm_p);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,du_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,d_norm_res);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,dv_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
         size /= threads;
     }
+
 
     LOG("launch min_and_gamma");
     min_and_gamma<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
@@ -299,12 +292,11 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     int tid = threadIdx.x;
     printf("blk=%d tid=%d\n", blockIdx.x, tid);
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    printf("global_idx=%d\n", global_idx);
+
     int stride = blockDim.x * gridDim.x;
-    printf("stride=%d\n", stride);
 
     double max_val_local = -1e5;
-    printf("max_val_local=%f\n", max_val_local);
+
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
