@@ -23,11 +23,6 @@ BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points
 
 #ifdef __CUDACC__
 // Kernels CUDA
-void init_memory(int i_max, int j_max, BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y, double* omega, double* epsilon, int* max_it);
-
-double orchestration(int i_max, int j_max);
-
-BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points);
 
 __global__ void pick_max();
 
@@ -55,9 +50,9 @@ __device__ double d2v_dx2(double* v, int i, int j, double delta_x, int j_max);
 
 __device__ double d2v_dy2(double* v, int i, int j, double delta_y, int j_max);
 
-__global__ void calculate_F(double* F, double* u, double* v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
+__global__ void calculate_F(double* F, double* u, double* v, int i_max, int j_max, double Re, double g_x, double delta_t, double delta_x, double delta_y, double gamma);
 
-__global__ void calculate_G(double * G, double* u, double* v, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
+__global__ void calculate_G(double * G, double* u, double* v, int i_max, int j_max, double Re, double g_y, double delta_t, double delta_x, double delta_y, double gamma);
 
 __global__ void calculate_RHS(double* RHS, double* F, double* G, double* u, double* v, int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 
