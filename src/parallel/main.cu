@@ -363,27 +363,24 @@ double orchestration(int i_max, int j_max) {
     
     int threads = 256;
     int blocks = (i_max * j_max + threads - 1) / threads;
-    int size = i_max * j_max;
 
     // Copiar valores para device
     CUDA_CHECK(cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice));
 
-    // acha o máximo da matriz u e v
-    while (size > 1){
+    // ✅ CORREÇÃO: Executar kernels uma única vez
+    pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
+    KERNEL_CHECK(); SYNC_CHECK("pick_max");
 
-        pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
+    LOG("launch max_reduce u");
+    max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
+    KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
-        LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
-        KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
+    LOG("launch max_reduce v");
+    max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
+    KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
-        LOG("launch max_reduce v");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
-        KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
-
-        size /= threads;
-    }
+    // ✅ REMOVER O LOOP INFINITO COMPLETAMENTE
 
     LOG("launch min_and_gamma");
     min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
