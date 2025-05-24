@@ -350,8 +350,8 @@ void free_memory_kernel() {
 
 __global__ void pick_max(double* du_max, double* dv_max, double* u, double* v) {
     // ✅ CORREÇÃO: Inicializar com valores pequenos mas positivos
-    *du_max = 1e-6;  // Valor mínimo para evitar divisão por zero
-    *dv_max = 1e-6;
+    *du_max = -100000.0;  // Valor mínimo para evitar divisão por zero
+    *dv_max = -100000.0;
 }
 
 
