@@ -292,7 +292,8 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
             
             // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
             double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-
+            printf("Iteration %d: L2 norm of residual = %.6f\n", it + 1, current_L2_res_norm);
+            printf("Iteration %d: L2 norm of p = %.6f\n", it + 1, norm_p_initial);
             if (current_L2_res_norm <= epsilon * (norm_p_initial + 0.01)) {
 
                 return it + 1;
