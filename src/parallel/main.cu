@@ -21,6 +21,21 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
 
+// Custom atomicMax for double values using atomicCAS
+__device__ double atomicMaxDouble(double* address, double val)
+{
+    unsigned long long int* address_as_ull = (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+    
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+              __double_as_longlong(max(val, __longlong_as_double(assumed))));
+    } while (assumed != old);
+    
+    return __longlong_as_double(old);
+}
+
 // CUDA kernel for red points (i+j is even)
 __global__ void sor_kernel_red(double *p, double *res, const double *RHS, 
                              int i_max, int j_max, double delta_x, double delta_y, 
@@ -46,7 +61,7 @@ __global__ void sor_kernel_red(double *p, double *res, const double *RHS,
         
         // Calculate residual
         double r = fabs(p_new - p_old);
-        atomicMax(max_res, r);
+        atomicMaxDouble(max_res, r);
         
         p[idx] = p_new;
         res[idx] = r;
@@ -78,7 +93,7 @@ __global__ void sor_kernel_black(double *p, double *res, const double *RHS,
         
         // Calculate residual
         double r = fabs(p_new - p_old);
-        atomicMax(max_res, r);
+        atomicMaxDouble(max_res, r);
         
         p[idx] = p_new;
         res[idx] = r;
@@ -284,7 +299,7 @@ int main(int argc, char* argv[])
 
         // Execute parallelized SOR step instead of the original
         clock_t start_sor = clock();
-        SOR_parallel(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it)
+        SOR_parallel(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);  // Added missing semicolon here
         printf("SOR complete!\n");
         clock_t end_sor = clock();
         double time_sor = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
