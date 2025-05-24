@@ -118,6 +118,40 @@ void extract_key_values(double *d_u, double *d_v, double *d_p, int i_max, int j_
  * @return 0 on exit.
  */
 
+ void print_diagnostic_values(double *d_data1, double *d_data2, double *d_data3, int i_max, int j_max) {
+    // Array para armazenar valores copiados da GPU
+    double values[3][5]; // 3 arrays, 5 pontos cada
+    
+    // Pontos para verificar (centro e alguns pontos estratégicos)
+    int points[5][2] = {
+        {i_max/2, j_max/2},         // Centro
+        {1, 1},                     // Canto inferior esquerdo
+        {i_max, 1},                 // Canto inferior direito
+        {1, j_max},                 // Canto superior esquerdo
+        {i_max, j_max}              // Canto superior direito
+    };
+    
+    // Copiar valores para verificação
+    for (int p = 0; p < 5; p++) {
+        int i = points[p][0];
+        int j = points[p][1];
+        int idx = j * (i_max + 2) + i;
+        
+        if (d_data1) cudaMemcpy(&values[0][p], &d_data1[idx], sizeof(double), cudaMemcpyDeviceToHost);
+        if (d_data2) cudaMemcpy(&values[1][p], &d_data2[idx], sizeof(double), cudaMemcpyDeviceToHost);
+        if (d_data3) cudaMemcpy(&values[2][p], &d_data3[idx], sizeof(double), cudaMemcpyDeviceToHost);
+    }
+    
+    // Imprimir valores
+    for (int p = 0; p < 5; p++) {
+        printf("Ponto (%d,%d): ", points[p][0], points[p][1]);
+        if (d_data1) printf("u=%.6f ", values[0][p]);
+        if (d_data2) printf("v=%.6f ", values[1][p]);
+        if (d_data3) printf("p=%.6f ", values[2][p]);
+        printf("\n");
+    }
+} 
+
 int main(int argc, char* argv[])
 {
     // Simulation parameters.
@@ -195,6 +229,11 @@ int main(int argc, char* argv[])
 
     clock_t start = clock();
 
+    // Após inicialização (antes do primeiro passo de tempo)
+    printf("\n===== VALORES INICIAIS =====\n");
+    // Imprimir valores em alguns pontos representativos (por exemplo, no centro)
+    print_diagnostic_values(d_u, d_v, d_p, i_max, j_max);
+
     while (t < T) {
         // Garantir que d_u e d_v estejam atualizados na GPU
         // (Este código deve ser executado em outro lugar - antes do loop ou na iteração anterior)
@@ -243,6 +282,30 @@ int main(int argc, char* argv[])
 
         t += delta_t;
         n++;
+
+        // Após cálculo de u_max/v_max
+        printf("\n===== ITERAÇÃO %d, TEMPO %.6f =====\n", n, t);
+        printf("u_max: %.6f, v_max: %.6f\n", u_max, v_max);
+        
+        // Após aplicar condições de contorno
+        apply_boundary_conditions_parallel(d_u, d_v, i_max, j_max, problem, t, f);
+        printf("\n===== APÓS CONDIÇÕES DE CONTORNO =====\n");
+        print_diagnostic_values(d_u, d_v, d_p, i_max, j_max);
+        
+        // Após calcular F e G
+        calculate_FG_parallel(d_F, d_G, d_u, d_v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
+        printf("\n===== APÓS CÁLCULO DE F e G =====\n");
+        print_diagnostic_values(d_F, d_G, NULL, i_max, j_max);
+        
+        // Após SOR
+        sor_iterations = sor_parallel(d_p, i_max, j_max, delta_x, delta_y, d_res, d_RHS, omega, epsilon, max_it);
+        printf("\n===== APÓS SOR (%d iterações) =====\n", sor_iterations);
+        print_diagnostic_values(NULL, NULL, d_p, i_max, j_max);
+        
+        // Após atualizar velocidades
+        update_velocities_parallel(d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
+        printf("\n===== APÓS ATUALIZAR VELOCIDADES =====\n");
+        print_diagnostic_values(d_u, d_v, NULL, i_max, j_max);
     }
 
     clock_t end = clock();
@@ -799,3 +862,4 @@ void extract_key_values(double *d_u, double *d_v, double *d_p, int i_max, int j_
     cudaMemcpy(v_center, &d_v[center_idx], sizeof(double), cudaMemcpyDeviceToHost);
     cudaMemcpy(p_center, &d_p[center_idx], sizeof(double), cudaMemcpyDeviceToHost);
 }
+
