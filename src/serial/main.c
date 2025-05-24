@@ -16,7 +16,6 @@
 #include "integration.h"
 #include "boundaries.h"
 
-#include <ctime>
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
@@ -131,7 +130,7 @@ int main(int argc, char* argv[])
         clock_t end_sor = clock();
         double time_spent = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
 
-        fprintf(stderr, "%.6f", time_spent);
+        fprintf(stderr, "%.6f\n", time_spent);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
