@@ -410,21 +410,17 @@ double orchestration(int i_max, int j_max) {
     
     while(it < max_it) {
         calculate_ghost<<<blocks, threads>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
-        cudaDeviceSynchronize(); LOG("calculate_ghost complete");
-
+        cudaDeviceSynchronize();
         red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
-        cudaDeviceSynchronize(); LOG("red_kernel complete");
-
+        cudaDeviceSynchronize();
         black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
-        cudaDeviceSynchronize(); LOG("black_kernel complete");
-
+        cudaDeviceSynchronize();
         residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, i_max, j_max, delta_x, delta_y);
-        cudaDeviceSynchronize(); LOG("residual_kernel complete");
+        cudaDeviceSynchronize();
 
         CUDA_CHECK(cudaMemcpy(d_norm_res, &zero, sizeof(double), cudaMemcpyHostToDevice));
         L2_norm<<<blocks, threads>>>(d_norm_res, d_res, i_max, j_max);
-        cudaDeviceSynchronize(); LOG("L2_norm for norm_res complete");
-
+        cudaDeviceSynchronize();
         double norm_res;
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
@@ -830,4 +826,5 @@ __global__ void extract_value_kernel(double* u, double* v, double* p, double* de
     result[1] = v[idx];
     result[2] = p[idx];
     result[3] = *delta_t_device;
+    printf("delta_t: %.6f\n", result[3]);
 }
