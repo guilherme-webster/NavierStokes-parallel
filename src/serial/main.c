@@ -86,6 +86,7 @@ int main(int argc, char* argv[])
     while (t < T) {
 
     	// Adaptive stepsize and weight factor for Donor-Cell
+        printf("delta_x: %.6f delta_y: %.6f\n", delta_x, delta_y);
         double u_max = max_mat(i_max, j_max, u);
         double v_max = max_mat(i_max, j_max, v);
         printf("u_max: %.6f v_max: %.6f\n", u_max, v_max);

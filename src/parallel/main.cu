@@ -205,6 +205,7 @@ int main(int argc, char* argv[])
         printf("u_max: %.6f, v_max: %.6f\n", u_max, v_max);
         
         // Calcular delta_t e gamma na CPU
+        printf("delta_x: %.6f, delta_y: %.6f\n", delta_x, delta_y);
         delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
                           delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
