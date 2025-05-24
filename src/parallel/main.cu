@@ -368,44 +368,26 @@ double orchestration(int i_max, int j_max) {
     CUDA_CHECK(cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice));
 
-    // ✅ CORREÇÃO: Executar kernels uma única vez
     pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
-    KERNEL_CHECK(); SYNC_CHECK("pick_max");
 
-    LOG("launch max_reduce u");
     max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
-    KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
-    LOG("launch max_reduce v");
     max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
-    KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
-    // ✅ REMOVER O LOOP INFINITO COMPLETAMENTE
-
-    LOG("launch min_and_gamma");
     min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
-    KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
 
     // Copiar gamma_val de volta para o host
     CUDA_CHECK(cudaMemcpy(&gamma_val, d_gamma, sizeof(double), cudaMemcpyDeviceToHost));
 
-    LOG("launch update_boundaries");
     int total_boundary_points = 2 * (i_max + j_max);
     update_boundaries_kernel<<<blocks,threads>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
-    KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
-    LOG("launch calculate_F");
     calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma_val);
-    KERNEL_CHECK(); SYNC_CHECK("calculate_F"); LOG("calculate_F complete");
 
-    LOG("launch calculate_G");
     calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma_val);
-    KERNEL_CHECK(); SYNC_CHECK("calculate_G"); LOG("calculate_G complete");
 
     // now we calculate rhs
-    LOG("launch calculate_RHS");
     calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, i_max, j_max, delta_t, delta_x, delta_y);
-    KERNEL_CHECK(); SYNC_CHECK("calculate_RHS"); LOG("calculate_RHS complete");
 
     cudaDeviceSynchronize();
     
@@ -413,9 +395,7 @@ double orchestration(int i_max, int j_max) {
     double zero = 0.0;
     CUDA_CHECK(cudaMemcpy(d_norm_p, &zero, sizeof(double), cudaMemcpyHostToDevice));
     
-    LOG("launch L2_norm for norm_p");
     L2_norm<<<blocks, threads>>>(d_norm_p, d_p, i_max, j_max);
-    KERNEL_CHECK(); SYNC_CHECK("L2_norm for norm_p"); LOG("L2_norm for norm_p complete");
 
     cudaDeviceSynchronize();
     
@@ -429,25 +409,18 @@ double orchestration(int i_max, int j_max) {
     cudaMemcpy(&epsilon, d_epsilon, sizeof(double), cudaMemcpyDeviceToHost);
     
     while(it < max_it) {
-        LOG("launch calculate_ghost");
         calculate_ghost<<<blocks, threads>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
         cudaDeviceSynchronize(); LOG("calculate_ghost complete");
 
-        printf("RHS calculated!\n");
-        // Now execute de SOR black and red
-        LOG("launch red_kernel");
         red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
         cudaDeviceSynchronize(); LOG("red_kernel complete");
 
-        LOG("launch black_kernel");
         black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
         cudaDeviceSynchronize(); LOG("black_kernel complete");
 
-        LOG("launch residual_kernel");
         residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, i_max, j_max, delta_x, delta_y);
         cudaDeviceSynchronize(); LOG("residual_kernel complete");
 
-        LOG("launch L2_norm for norm_res");
         CUDA_CHECK(cudaMemcpy(d_norm_res, &zero, sizeof(double), cudaMemcpyHostToDevice));
         L2_norm<<<blocks, threads>>>(d_norm_res, d_res, i_max, j_max);
         cudaDeviceSynchronize(); LOG("L2_norm for norm_res complete");
@@ -461,11 +434,8 @@ double orchestration(int i_max, int j_max) {
         it++;
     }
 
-    printf("SOR complete!\n");
     update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, d_F, d_G, i_max, j_max, delta_t, delta_x, delta_y);
     cudaDeviceSynchronize();
-    printf("Velocities updated!\n");
-    // update the velocities
 
     double result[4];
     extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, d_delta_t, i_max, j_max, result);
@@ -475,7 +445,6 @@ double orchestration(int i_max, int j_max) {
     printf("V-CENTER: %.6f\n", result[1]);
     printf("P-CENTER: %.6f\n", result[2]);
 
-    LOG("exit orchestration");
     return result[3];
 }
 
@@ -489,7 +458,6 @@ __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, do
     *delta_t = tau * min;
     *gamma = fmax((*du_max) * (*delta_t) / delta_x, (*dv_max) * (*delta_t) / delta_y);
     // debug print computed values
-    printf("[min_and_gamma] du_max=%f dv_max=%f delta_t=%f gamma=%f\n", *du_max, *dv_max, *delta_t, *gamma);
 }
 
 
@@ -520,13 +488,11 @@ __device__ double atomicAddDouble(double* address, double val) {
 __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
-    printf("blk=%d tid=%d\n", blockIdx.x, tid);
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     int stride = blockDim.x * gridDim.x;
 
     double max_val_local = -1e5;
-    printf("max_val_local=%f\n", max_val_local);
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
@@ -536,7 +502,6 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     }
 
     shared_data[tid] = max_val_local;
-    printf("blk=%d tid=%d local_max=%f\n", blockIdx.x, tid, max_val_local);
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
@@ -547,7 +512,6 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     }
 
     if (tid==0) {
-      printf("blk=%d block_max=%f -> atomicMax\n", blockIdx.x, shared_data[0]);
       atomicMax(&max_val[0], shared_data[0]);
     }
 }
