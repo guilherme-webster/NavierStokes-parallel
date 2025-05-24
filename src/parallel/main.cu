@@ -120,7 +120,6 @@ int main(int argc, char* argv[])
     int i_max, j_max;                   // number of grid points in each direction
     double a, b;                        // sizes of the grid
     double Re;                          // reynolds number
-    double delta_t, delta_x, delta_y;   // step sizes
     double gamma;                       // weight for Donor-Cell-stencil
     double T;                           // max time for integration
     double g_x;                         // x-component of g
@@ -164,15 +163,6 @@ int main(int argc, char* argv[])
 
     double *d_u, *d_v, *d_p;
     double *d_F, *d_G, *d_res, *d_RHS;
-    double *d_delta_x, *d_delta_y, *d_delta_t;
-    double *d_gamma, *d_omega, *d_epsilon;
-    int *d_i_max, *d_j_max;
-    double *d_a, *d_b, *d_Re, *d_T;
-    double *d_g_x, *d_g_y;
-    double d_T, d_tau;
-    int *d_problem, *d_n_print;
-    double *d_f;
-    int *d_max_it;
     // Allocate memory for device variables
     int size = (i_max +2) * (j_max + 2) * sizeof(double);
     cudaMalloc((void**)&d_u, size);
@@ -182,33 +172,6 @@ int main(int argc, char* argv[])
     cudaMalloc((void**)&d_G, size);
     cudaMalloc((void**)&d_res, size);
     cudaMalloc((void**)&d_RHS, size);
-    cudaMalloc((void**)&d_delta_x, sizeof(double));
-    cudaMalloc((void**)&d_delta_y, sizeof(double));
-    cudaMalloc((void**)&d_delta_t, sizeof(double));
-    cudaMalloc((void**)&d_gamma, sizeof(double));
-    cudaMalloc((void**)&d_omega, sizeof(double));
-    cudaMalloc((void**)&d_epsilon, sizeof(double));
-    cudaMalloc((void**)&d_Re, sizeof(double));
-    cudaMalloc((void**)&d_g_x, sizeof(double));
-    cudaMalloc((void**)&d_g_y, sizeof(double));
-    cudaMalloc((void**)&d_tau, sizeof(double));
-    cudaMalloc((void**)&d_n_print, sizeof(int));
-    cudaMalloc((void**)&d_max_it, sizeof(int));
-    cudaMalloc((void**)&d_tau, sizeof(double));
-    cudaMalloc((void**)&d_n_print, sizeof(int));
-    cudaMalloc((void**)&d_max_it, sizeof(int));
-    // Copy parameters to device
-    cudaMemcpy(d_Re, &Re, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_g_x, &g_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_g_y, &g_y, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_tau, &tau, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_omega, &omega, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_epsilon, &epsilon, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_max_it, &max_it, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_n_print, &n_print, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_delta_t, &delta_t, sizeof(double), cudaMemcpyHostToDevice);
     
     cudamemset(d_u, 0, size);
     cudamemset(d_v, 0, size);
@@ -217,7 +180,6 @@ int main(int argc, char* argv[])
     cudamemset(d_G, 0, size);
     cudamemset(d_res, 0, size);
     cudamemset(d_RHS, 0, size);
-    cudamemset(d_gamma, 0, sizeof(double));
     
 
         // Time loop.
@@ -240,9 +202,6 @@ int main(int argc, char* argv[])
         delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
                           delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
-        
-        // Atualizar delta_t no device para outros kernels
-        cudaMemcpy(d_delta_t, &delta_t, sizeof(double), cudaMemcpyHostToDevice);
         
         // Aplicar condições de contorno
         apply_boundary_conditions_parallel(d_u, d_v, i_max, j_max, problem, t, f);
@@ -296,10 +255,6 @@ int main(int argc, char* argv[])
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
     fprintf(stderr, "%.6f", time_spent);
-
-    // Free grid memory.
-    free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
-    
   
 
     return 0;
