@@ -505,7 +505,6 @@ int initBoundaryIndices(int i_max, int j_max) {
     free(h_top_indices);
     free(h_bottom_indices);
     
-    printf("Boundary indices pre-calculated and transferred to GPU\n");
     return 0;
 }
 
@@ -1017,7 +1016,40 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
     update_uv_kernel<<<gridSize2, blockSize2>>>(
         device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK("update_uv_kernel");
+
+    // Obter valores centrais para impressão
+    int center_i = i_max / 2;
+    int center_j = j_max / 2;
+    double u_center = 0.0, v_center = 0.0, p_center = 0.0;
     
+    // Alocar memória para valores centrais
+    double *d_u_center, *d_v_center, *d_p_center;
+    CUDACHECK(cudaMalloc(&d_u_center, sizeof(double)));
+    CUDACHECK(cudaMalloc(&d_v_center, sizeof(double)));
+    CUDACHECK(cudaMalloc(&d_p_center, sizeof(double)));
+    
+    // Extrair valores centrais
+    extract_value_kernel<<<1, 1>>>(device_u, center_i * (j_max + 2) + center_j, d_u_center);
+    extract_value_kernel<<<1, 1>>>(device_v, center_i * (j_max + 2) + center_j, d_v_center);
+    extract_value_kernel<<<1, 1>>>(device_p, center_i * (j_max + 2) + center_j, d_p_center);
+    KERNEL_CHECK("extract_value_kernel");
+    
+    // Copiar valores de volta para o host
+    CUDACHECK(cudaMemcpy(&u_center, d_u_center, sizeof(double), cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(&v_center, d_v_center, sizeof(double), cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(&p_center, d_p_center, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Imprimir valores
+    printf("TIMESTEP: %d TIME: %f\n", *n_out, *t);
+    printf("U-CENTER: %f\n", u_center);
+    printf("V-CENTER: %f\n", v_center);
+    printf("P-CENTER: %f\n", p_center);
+    
+    // Liberar memória temporária
+    CUDACHECK(cudaFree(d_u_center));
+    CUDACHECK(cudaFree(d_v_center));
+    CUDACHECK(cudaFree(d_p_center));
+
     // Atualizar tempo
     *t += delta_t;
     
