@@ -65,7 +65,7 @@ int i_max, j_max;                   // number of grid points in each direction
 double a, b;                        // sizes of the grid
 double Re;                          // reynolds number
 double delta_t, delta_x, delta_y;   // step sizes
-double gamma;                       // weight for Donor-Cell-stencil
+double gamma_val;                       // weight for Donor-Cell-stencil
 double T;                           // max time for integration
 double g_x;                         // x-component of g
 double g_y;                         // y-component of g
@@ -389,17 +389,20 @@ double orchestration(int i_max, int j_max) {
     min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
     KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
 
+    // Copiar gamma_val de volta para o host
+    CUDA_CHECK(cudaMemcpy(&gamma_val, d_gamma, sizeof(double), cudaMemcpyDeviceToHost));
+
     LOG("launch update_boundaries");
     int total_boundary_points = 2 * (i_max + j_max);
     update_boundaries_kernel<<<blocks,threads>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
     KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
     LOG("launch calculate_F");
-    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma);
+    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma_val);
     KERNEL_CHECK(); SYNC_CHECK("calculate_F"); LOG("calculate_F complete");
 
     LOG("launch calculate_G");
-    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma);
+    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma_val);
     KERNEL_CHECK(); SYNC_CHECK("calculate_G"); LOG("calculate_G complete");
 
     // now we calculate rhs
