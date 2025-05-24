@@ -158,8 +158,8 @@ int main(int argc, char* argv[])
     precompute_boundary_points(i_max, j_max);
 
     // Set step size in space.
-    delta_x = a / i_max;
-    delta_y = b / j_max;
+    double delta_x = a / i_max;
+    double delta_y = b / j_max;
 
     double *d_u, *d_v, *d_p;
     double *d_F, *d_G, *d_res, *d_RHS;
@@ -173,13 +173,13 @@ int main(int argc, char* argv[])
     cudaMalloc((void**)&d_res, size);
     cudaMalloc((void**)&d_RHS, size);
     
-    cudamemset(d_u, 0, size);
-    cudamemset(d_v, 0, size);
-    cudamemset(d_p, 0, size);
-    cudamemset(d_F, 0, size);
-    cudamemset(d_G, 0, size);
-    cudamemset(d_res, 0, size);
-    cudamemset(d_RHS, 0, size);
+    cudaMemset(d_u, 0, size);
+    cudaMemset(d_v, 0, size);
+    cudaMemset(d_p, 0, size);
+    cudaMemset(d_F, 0, size);
+    cudaMemset(d_G, 0, size);
+    cudaMemset(d_res, 0, size);
+    cudaMemset(d_RHS, 0, size);
     
 
         // Time loop.
@@ -214,23 +214,12 @@ int main(int argc, char* argv[])
         // Calcular RHS diretamente na GPU
         calculate_RHS_parallel(d_RHS, d_F, d_G, i_max, j_max, delta_t, delta_x, delta_y);
 
-        // Se precisar do RHS na CPU para o SOR:
-        cudaMemcpy(RHS[0], d_RHS, size, cudaMemcpyDeviceToHost);
-
-
-        // Copiar matriz p para GPU (caso ainda não esteja lá)
-        cudaMemcpy(d_p, p[0], size, cudaMemcpyHostToDevice);
-
         // Executar SOR paralelo
         int sor_iterations = sor_parallel(d_p, i_max, j_max, delta_x, delta_y, d_res, d_RHS, omega, epsilon, max_it);
 
         // Atualizar velocidades em paralelo na GPU
         update_velocities_parallel(d_u, d_v, d_F, d_G, d_p, i_max, j_max, delta_t, delta_x, delta_y);
 
-        // Copiar resultados de volta para CPU para visualização/output
-        cudaMemcpy(p[0], d_p, size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(u[0], d_u, size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(v[0], d_v, size, cudaMemcpyDeviceToHost);
 
         if (n % n_print == 0) {
             // Extrair apenas os valores necessários para impressão
