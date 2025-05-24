@@ -507,7 +507,7 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     int stride = blockDim.x * gridDim.x;
 
     // ✅ CORREÇÃO: Inicializar com o primeiro elemento válido ou 0
-    double max_val_local = -1e6;  // Ou usar arr[0] se disponível
+    double max_val_local = -100000;  // Ou usar arr[0] se disponível
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (fabs(arr[i]) > max_val_local) {  // ✅ Usar valor absoluto
