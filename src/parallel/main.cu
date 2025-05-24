@@ -461,9 +461,6 @@ double orchestration(int i_max, int j_max) {
 
 __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, double* dv_max, 
                               double Re, double tau, double delta_x, double delta_y) {
-    // ✅ CORREÇÃO: Garantir valores mínimos para evitar delta_t = 0
-    double du_safe = fmax(*du_max, 1e-6);
-    double dv_safe = fmax(*dv_max, 1e-6);
     
     double min = fmin(Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
                       delta_x / du_safe);
