@@ -350,11 +350,9 @@ void free_memory_kernel() {
 
 
 __global__ void pick_max(double* du_max, double* dv_max, double* u, double* v) {
-    // debug print first elements
-    double u0 = u[0];
-    double v0 = v[0];
-    *du_max = u0;
-    *dv_max = v0;
+    // ✅ CORREÇÃO: Inicializar com valores pequenos mas positivos
+    *du_max = 1e-6;  // Valor mínimo para evitar divisão por zero
+    *dv_max = 1e-6;
 }
 
 
@@ -447,13 +445,26 @@ double orchestration(int i_max, int j_max) {
 
 __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, double* dv_max, 
                               double Re, double tau, double delta_x, double delta_y) {
+    // ✅ CORREÇÃO: Garantir valores mínimos para evitar delta_t = 0
+    double du_safe = fmax(*du_max, 1e-6);
+    double dv_safe = fmax(*dv_max, 1e-6);
+    
     double min = fmin(Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
-                      delta_x / fabs(*du_max));
-    min = fmin(min, delta_y / fabs(*dv_max));
+                      delta_x / du_safe);
+    min = fmin(min, delta_y / dv_safe);
     min = fmin(min, 3.0);
+    
     *delta_t = tau * min;
-    *gamma = fmax((*du_max) * (*delta_t) / delta_x, (*dv_max) * (*delta_t) / delta_y);
-    // debug print computed values
+    
+    // ✅ Garantir delta_t mínimo
+    if (*delta_t < 1e-6) {
+        *delta_t = 1e-6;
+    }
+    
+    *gamma = fmax(du_safe * (*delta_t) / delta_x, dv_safe * (*delta_t) / delta_y);
+    
+    // Debug prints
+    printf("DEBUG: du_max=%.6e, dv_max=%.6e, delta_t=%.6e\n", *du_max, *dv_max, *delta_t);
 }
 
 
@@ -485,14 +496,14 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
-
     int stride = blockDim.x * gridDim.x;
 
-    double max_val_local = -1e5;
+    // ✅ CORREÇÃO: Inicializar com o primeiro elemento válido ou 0
+    double max_val_local = 0.0;  // Ou usar arr[0] se disponível
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
-        if (arr[i] > max_val_local) {
-            max_val_local = arr[i];
+        if (fabs(arr[i]) > max_val_local) {  // ✅ Usar valor absoluto
+            max_val_local = fabs(arr[i]);
         }
     }
 
@@ -506,8 +517,8 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
         __syncthreads();
     }
 
-    if (tid==0) {
-      atomicMax(&max_val[0], shared_data[0]);
+    if (tid == 0) {
+        atomicMax(&max_val[0], shared_data[0]);
     }
 }
 
