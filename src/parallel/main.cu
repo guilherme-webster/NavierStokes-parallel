@@ -376,8 +376,9 @@ __global__ void apply_inflow_top_kernel(double *u, double *v, BoundaryPoint *poi
         int idx_u = j * (i_max + 2) + i;
         int idx_below = (j-1) * (i_max + 2) + i;
         
-        // TOP boundary: inflow
-        u[idx_below] = 2.0 * u_in - u[idx_u];
+        // TOP boundary: inflow - implementação corrigida
+        // Usar apenas o valor de entrada diretamente
+        u[idx_below] = u_in;  // Simplificar para u[idx_below] = u_in
         v[idx_below] = v_in;
     }
 }
