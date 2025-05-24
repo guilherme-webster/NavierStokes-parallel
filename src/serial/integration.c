@@ -132,7 +132,6 @@ int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double
     double dxdx = delta_x * delta_x;
     int it = 0;
 
-    double norm_p = L2(p, i_max, j_max);    // L2 norm of grid.
     while (it < max_it) {
         // Fill ghost cells with values of neighbourng cells for new iteration step.
         for (j = 1; j <= j_max; j++)
@@ -157,12 +156,6 @@ int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double
             for (j = 1; j <= j_max; j++) {
                 res[i][j] = (p[i+1][j] - 2.0*p[i][j] + p[i-1][j]) / dxdx + (p[i][j+1] - 2.0*p[i][j] + p[i][j-1]) / dydy - RHS[i][j];
             }
-        }
-
-        //printf("%.5f\n", L2(res, i_max, j_max));
-        // Abortion condition.
-        if (L2(res, i_max, j_max) <= eps * (norm_p + 0.01)) {
-            return 0;
         }
 
         it++;

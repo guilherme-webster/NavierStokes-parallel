@@ -216,18 +216,24 @@ __global__ void update_boundaries_kernel_uva(double **p, int i_max, int j_max) {
     }
 }
 
-// Função auxiliar no host para calcular a norma L2
-double calculate_L2_norm_host_uva(double **matrix, int i_max, int j_max) {
-    double norm_sq_sum = 0.0;
-    if (i_max == 0 || j_max == 0) return 0.0;
 
-    for (int r = 1; r <= i_max; r++) {
-        for (int c = 1; c <= j_max; c++) {
-            norm_sq_sum += matrix[r][c] * matrix[r][c];
-        }
+// Kernel para calcular o resíduo da equação de Poisson: L(p) - RHS
+__global__ void calculate_poisson_residual_kernel(double **p, double **RHS, double **res,
+                                                int i_max, int j_max, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+
+    if (i <= i_max && j <= j_max) {
+        double dx2 = delta_x * delta_x;
+        double dy2 = delta_y * delta_y;
+
+        res[i][j] = (p[i+1][j] - 2.0 * p[i][j] + p[i-1][j]) / dx2 +
+                    (p[i][j+1] - 2.0 * p[i][j] + p[i][j-1]) / dy2 -
+                    RHS[i][j];
     }
-    return sqrt(norm_sq_sum / (i_max * j_max));
 }
+
+
 
 // Função SOR usando UVA com critério de convergência similar ao serial
 int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
@@ -241,9 +247,7 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
     dim3 boundaryGridDim(((i_max + 2) + boundaryBlockDim.x - 1) / boundaryBlockDim.x, 
                          ((j_max + 2) + boundaryBlockDim.y - 1) / boundaryBlockDim.y);
     
-    // Calcular norma inicial de p
-    double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
-    
+
     for (int it = 0; it < max_it; it++) {
         // Prefetch para GPU se necessário (opcional)
         cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
@@ -266,27 +270,8 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // 4. Calcular resíduo para verificar convergência (simplificado por agora)
-        if ((it + 1) % 100 == 0) {
-            // Calcular resíduo de Poisson L(p) - RHS
-            for (int r = 1; r <= i_max; r++) {
-                for (int c = 1; c <= j_max; c++) {
-                    double dx2 = delta_x * delta_x;
-                    double dy2 = delta_y * delta_y;
-                    res[r][c] = (p[r+1][c] - 2.0 * p[r][c] + p[r-1][c]) / dx2 +
-                               (p[r][c+1] - 2.0 * p[r][c] + p[r][c-1]) / dy2 -
-                               RHS[r][c];
-                }
-            }
-            
-            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-            printf("SOR UVA iteration %d, L2_residual: %.10e\n", it + 1, current_L2_res_norm);
-            
-            if (current_L2_res_norm <= epsilon * (norm_p_initial + 0.01)) {
-                printf("SOR UVA converged after %d iterations.\n", it + 1);
-                return it + 1;
-            }
-        }
+        // 4. Calcular resíduo usando kernel CUDA (mais eficiente)
+        calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
     }
     
     printf("SOR UVA reached maximum %d iterations.\n", max_it);
