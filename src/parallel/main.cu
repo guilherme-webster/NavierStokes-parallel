@@ -151,31 +151,31 @@ __global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int 
 int main(int argc, char* argv[])
 {
     // Grid pointers.
-	double** u;     // velocity x-component
-	double** v;     // velocity y-component
-	double** p;     // pressure
+	__device__ double** u;     // velocity x-component
+	__device__ double** v;     // velocity y-component
+	__device__ double** p;     // pressure
 
-    double** F;     // F term
-    double** G;     // G term
-    double** res;   // SOR residuum
-    double** RHS;   // RHS of poisson equation
+    __device__ double** F;     // F term
+    __device__ double** G;     // G term
+    __device__ double** res;   // SOR residuum
+    __device__ double** RHS;   // RHS of poisson equation
 
     // Simulation parameters.
-    int i_max, j_max;                   // number of grid points in each direction
-    double a, b;                        // sizes of the grid
-    double Re;                          // reynolds number
-    double delta_t, delta_x, delta_y;   // step sizes
-    double gamma;                       // weight for Donor-Cell-stencil
-    double T;                           // max time for integration
-    double g_x;                         // x-component of g
-    double g_y;                         // y-component of g
-    double tau;                         // security factor for adaptive step size
-    double omega;                       // relaxation parameter
-    double epsilon;                     // relative tolerance for SOR
-    int max_it;                         // maximum iterations for SOR
-    int n_print;                        // output to file every ..th step
-    int problem;                        // problem type
-    double f;                           // frequency of periodic boundary conditions (if problem == 2)
+    __device__ int i_max, j_max;                   // number of grid points in each direction
+    __device__ double a, b;                        // sizes of the grid
+    __device__ double Re;                          // reynolds number
+    __device__ double delta_t, delta_x, delta_y;   // step sizes
+    __device__ double gamma;                       // weight for Donor-Cell-stencil
+    __device__ double T;                           // max time for integration
+    __device__ double g_x;                         // x-component of g
+    __device__ double g_y;                         // y-component of g
+    __device__ double tau;                         // security factor for adaptive step size
+    __device__ double omega;                       // relaxation parameter
+    __device__ double epsilon;                     // relative tolerance for SOR
+    __device__ int max_it;                         // maximum iterations for SOR
+    __device__ int n_print;                        // output to file every ..th step
+    __device__ int problem;                        // problem type
+    __device__ double f;                           // frequency of periodic boundary conditions (if problem == 2)
 
     const char* param_file = "parameters.txt"; // file containing parameters
 
@@ -291,6 +291,8 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMallocManaged((void**)&d_gamma, sizeof(double)));
     CUDA_CHECK(cudaMallocManaged((void**)&d_norm_p, sizeof(double)));
     CUDA_CHECK(cudaMallocManaged((void**)&d_norm_res, sizeof(double)));
+    CUDA_CHECK(cudaMallocManaged((void**)&d_delta_t, sizeof(double)));
+    *d_delta_t = 0.0;  // Initialize
     
     CUDA_CHECK(cudaMemset(d_u, 0, size));
     CUDA_CHECK(cudaMemset(d_v, 0, size));
