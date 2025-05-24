@@ -91,6 +91,17 @@ double *device_dpdy = NULL;
 
 double u_max = 0.0;
 double v_max = 0.0;
+
+// Variáveis para índices de bordas pré-calculados
+int *device_left_indices = NULL;
+int *device_right_indices = NULL;
+int *device_top_indices = NULL;
+int *device_bottom_indices = NULL;
+int num_left_indices = 0;
+int num_right_indices = 0;
+int num_top_indices = 0;
+int num_bottom_indices = 0;
+
 double delta_t, delta_x, delta_y, gamma_factor;  // Alterado de gamma para gamma_factor
 size_t cuda_array_size = 0;
 int grid_i_max = 0;
@@ -337,6 +348,12 @@ int initCudaArrays(double** p, double** u, double** v, double** res, double** RH
     // Liberar o buffer temporário
     free(temp_host_buffer);
     
+    // Inicializar índices de bordas pré-calculados
+    if (initBoundaryIndices(i_max, j_max) != 0) {
+        fprintf(stderr, "ERROR: Failed to initialize boundary indices\n");
+        return -1;
+    }
+    
     return 0;
 }
 
@@ -408,209 +425,132 @@ void freeCudaArrays() {
         CUDACHECK(cudaFree(device_dpdy));
         device_dpdy = NULL;
     }
+    
+    // Liberar arrays de índices de bordas
+    if (device_left_indices) {
+        CUDACHECK(cudaFree(device_left_indices));
+        device_left_indices = NULL;
+    }
+    
+    if (device_right_indices) {
+        CUDACHECK(cudaFree(device_right_indices));
+        device_right_indices = NULL;
+    }
+    
+    if (device_top_indices) {
+        CUDACHECK(cudaFree(device_top_indices));
+        device_top_indices = NULL;
+    }
+    
+    if (device_bottom_indices) {
+        CUDACHECK(cudaFree(device_bottom_indices));
+        device_bottom_indices = NULL;
+    }
 }
 
-int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta_x, double delta_y, 
-            double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
-            int problem, double f, double* t, int* n_out, double g_x, double g_y) {
-    int it = 0;
-    double dydy = delta_y * delta_y;
-    double dxdx = delta_x * delta_x;
-    double norm_p = 0.0;
+// Função para inicializar índices de bordas pré-calculados
+int initBoundaryIndices(int i_max, int j_max) {
+    // Calcular tamanhos dos arrays de índices
+    num_left_indices = j_max;
+    num_right_indices = j_max;
+    num_top_indices = i_max;
+    num_bottom_indices = i_max;
     
-    // Allocate device memory for reduction and temporary values
-    double *d_norm_p, *d_res_norm;
-    double *d_center_values, h_center_values[3]; // For u, v, p values at center
+    // Alocar memória para índices no host
+    int *h_left_indices = (int*)malloc(num_left_indices * sizeof(int));
+    int *h_right_indices = (int*)malloc(num_right_indices * sizeof(int));
+    int *h_top_indices = (int*)malloc(num_top_indices * sizeof(int));
+    int *h_bottom_indices = (int*)malloc(num_bottom_indices * sizeof(int));
     
-    CUDACHECK(cudaMalloc(&d_norm_p, sizeof(double)));
-    CUDACHECK(cudaMalloc(&d_res_norm, sizeof(double)));
-    CUDACHECK(cudaMalloc(&d_center_values, 3 * sizeof(double)));
-    
-    if (!CHECK_POINTER(d_norm_p, sizeof(double), "d_norm_p") || 
-        !CHECK_POINTER(d_res_norm, sizeof(double), "d_res_norm") ||
-        !CHECK_POINTER(d_center_values, 3 * sizeof(double), "d_center_values")) {
+    if (!h_left_indices || !h_right_indices || !h_top_indices || !h_bottom_indices) {
+        printf("ERROR: Failed to allocate host memory for boundary indices\n");
         return -1;
     }
     
-    // Calculate initial pressure norm using GPU
-    CUDACHECK(cudaMemset(d_norm_p, 0, sizeof(double)));
-    int num_threads = 256;
-    int num_blocks = (i_max + num_threads - 1) / num_threads;
-    calculate_pressure_norm_kernel<<<num_blocks, num_threads, num_threads * sizeof(double)>>>(
-        device_p, d_norm_p, i_max, j_max);
-    KERNEL_CHECK("calculate_pressure_norm_kernel");
-    
-    // Get result back to CPU
-    double h_norm_p;
-    CUDACHECK(cudaMemcpy(&h_norm_p, d_norm_p, sizeof(double), cudaMemcpyDeviceToHost));
-    norm_p = sqrt(h_norm_p / (i_max * j_max));
-    
-    // 1. Calculate u_max and v_max using kernel max_mat_kernel
-    double *d_umax, *d_vmax, h_umax = 0.0, h_vmax = 0.0;
-    CUDACHECK(cudaMalloc(&d_umax, sizeof(double)));
-    CUDACHECK(cudaMalloc(&d_vmax, sizeof(double)));
-    
-    if (!CHECK_POINTER(d_umax, sizeof(double), "d_umax") || 
-        !CHECK_POINTER(d_vmax, sizeof(double), "d_vmax")) {
-        CUDACHECK(cudaFree(d_norm_p));
-        CUDACHECK(cudaFree(d_res_norm));
-        CUDACHECK(cudaFree(d_center_values));
-        return -1;
+    // Pré-calcular índices para cada borda
+    // LEFT (i=0, j=1 até j_max)
+    for (int j = 1; j <= j_max; j++) {
+        h_left_indices[j-1] = 0 * (j_max + 2) + j;
     }
     
-    // Initialize with zero
-    CUDACHECK(cudaMemset(d_umax, 0, sizeof(double)));
-    CUDACHECK(cudaMemset(d_vmax, 0, sizeof(double)));
-    
-    int max_blocks = 32; // Adjust according to the domain size
-    int max_threads = 256;
-    
-    max_mat_kernel_double<<<max_blocks, max_threads>>>(device_u, i_max, j_max, d_umax);
-    KERNEL_CHECK("max_mat_kernel_double (u)");
-    
-    max_mat_kernel_double<<<max_blocks, max_threads>>>(device_v, i_max, j_max, d_vmax);
-    KERNEL_CHECK("max_mat_kernel_double (v)");
-    
-    // Copy results back to host
-    CUDACHECK(cudaMemcpy(&h_umax, d_umax, sizeof(double), cudaMemcpyDeviceToHost));
-    CUDACHECK(cudaMemcpy(&h_vmax, d_vmax, sizeof(double), cudaMemcpyDeviceToHost));
-    
-    u_max = h_umax;
-    v_max = h_vmax;
-    
-    CUDACHECK(cudaFree(d_umax));
-    CUDACHECK(cudaFree(d_vmax));
-    
-    // Calculate delta_t and gamma_factor
-    delta_t = tau * n_min(4, 3.0, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
-    gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
-    
-    
-    // 1. Boundary conditions (GPU)
-    dim3 block1D_j((j_max + 127) / 128); // for sides with j_max
-    dim3 block1D_i((i_max + 127) / 128); // for sides with i_max
-    int threads1D = 128;
-    if (problem == 1){
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, LEFT);
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, RIGHT);
-        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, BOTTOM);
-        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, TOP, 1.0, 0.0);
-    }
-    else if (problem == 2){
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, LEFT);
-        set_noslip_linear_kernel<<<block1D_j, threads1D>>>(i_max, j_max, device_u, device_v, RIGHT);
-        set_noslip_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, BOTTOM);
-        set_inflow_linear_kernel<<<block1D_i, threads1D>>>(i_max, j_max, device_u, device_v, TOP, sin(f*(*t)), 0.0);           
-    }
-    else {
-        CUDACHECK(cudaFree(d_norm_p));
-        CUDACHECK(cudaFree(d_res_norm));
-        CUDACHECK(cudaFree(d_center_values));
-        return -1;
-    }
-    CUDACHECK(cudaDeviceSynchronize());
-    printf("Conditions set!\n");
-
-    // 2. FG calculation (GPU)
-    dim3 block2D(16, 16);
-    dim3 grid2D((i_max+block2D.x-1)/block2D.x, (j_max+block2D.y-1)/block2D.y);
-    FG_linear_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
-    CUDACHECK(cudaDeviceSynchronize());
-    printf("F, G calculated!\n");
-
-    // 3. RHS calculation (GPU)
-    RHS_kernel<<<grid2D, block2D>>>(device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
-    CUDACHECK(cudaDeviceSynchronize());
-    printf("RHS calculated!\n");
-
-    // 4. SOR loop (GPU calculations)
-    dim3 blockSOR(16, 16);
-    dim3 gridSOR((i_max+blockSOR.x-1)/blockSOR.x, (j_max+blockSOR.y-1)/blockSOR.y);
-    while (it < max_it) {
-        // Update pressure boundary conditions (ghost cells) on GPU
-        update_pressure_bounds_kernel<<<block1D_i, threads1D>>>(device_p, i_max, j_max);
-        CUDACHECK(cudaDeviceSynchronize());
-        
-        // Red points
-        RedSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
-        CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
-        
-        // Black points
-        BlackSORKernel<<<gridSOR, blockSOR>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
-        CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
-        
-        // Calculate residuals
-        CalculateResidualKernel<<<gridSOR, blockSOR>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
-        CUDACHECK(cudaGetLastError());
-        CUDACHECK(cudaDeviceSynchronize());
-        
-        // Check convergence using GPU reduction
-        CUDACHECK(cudaMemset(d_res_norm, 0, sizeof(double)));
-        calculate_residual_norm_kernel<<<num_blocks, num_threads, num_threads * sizeof(double)>>>(
-            device_res, d_res_norm, i_max, j_max);
-        KERNEL_CHECK("calculate_residual_norm_kernel");
-        
-        // Get result back to CPU
-        double h_res_norm;
-        CUDACHECK(cudaMemcpy(&h_res_norm, d_res_norm, sizeof(double), cudaMemcpyDeviceToHost));
-        double res_norm = sqrt(h_res_norm / (i_max * j_max));
-        
-        if (res_norm <= eps * (norm_p + 0.01)) {
-            break; // Convergence achieved
-        }
-        it++;
-    }
-    printf("SOR complete!\n");
-    
-    // 4. Update u and v using update_uv_kernel
-    update_uv_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
-    KERNEL_CHECK("update_uv_kernel");
-    CUDACHECK(cudaDeviceSynchronize());
-    
-    // Calculate center index
-    int center_i = i_max/2;
-    int center_j = j_max/2;
-    
-    // Check limits before accessing central values
-    if (center_i < 0 || center_i > i_max+1 || center_j < 0 || center_j > j_max+1) {
-        CUDACHECK(cudaFree(d_norm_p));
-        CUDACHECK(cudaFree(d_res_norm));
-        CUDACHECK(cudaFree(d_center_values));
-        return -1;
+    // RIGHT (i=i_max ou i_max+1, j=1 até j_max)
+    for (int j = 1; j <= j_max; j++) {
+        h_right_indices[j-1] = i_max * (j_max + 2) + j;
     }
     
-    int center_idx = center_i * (j_max + 2) + center_j;
+    // TOP (i=1 até i_max, j=j_max ou j_max+1)
+    for (int i = 1; i <= i_max; i++) {
+        h_top_indices[i-1] = i * (j_max + 2) + j_max;
+    }
     
-    // Extract central values directly on GPU
-    extract_value_kernel<<<1, 1>>>(device_u, center_idx, &d_center_values[0]);
-    extract_value_kernel<<<1, 1>>>(device_v, center_idx, &d_center_values[1]);
-    extract_value_kernel<<<1, 1>>>(device_p, center_idx, &d_center_values[2]);
-    CUDACHECK(cudaDeviceSynchronize());
+    // BOTTOM (i=1 até i_max, j=0)
+    for (int i = 1; i <= i_max; i++) {
+        h_bottom_indices[i-1] = i * (j_max + 2) + 0;
+    }
     
-    // Copy results back to host
-    CUDACHECK(cudaMemcpy(h_center_values, d_center_values, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+    // Alocar memória na GPU e copiar índices
+    CUDACHECK(cudaMalloc(&device_left_indices, num_left_indices * sizeof(int)));
+    CUDACHECK(cudaMalloc(&device_right_indices, num_right_indices * sizeof(int)));
+    CUDACHECK(cudaMalloc(&device_top_indices, num_top_indices * sizeof(int)));
+    CUDACHECK(cudaMalloc(&device_bottom_indices, num_bottom_indices * sizeof(int)));
     
-    // Output central values for debugging
-    printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
-    printf("U-CENTER: %.6f\n", h_center_values[0]);
-    printf("V-CENTER: %.6f\n", h_center_values[1]);
-    printf("P-CENTER: %.6f\n", h_center_values[2]);
+    CUDACHECK(cudaMemcpy(device_left_indices, h_left_indices, num_left_indices * sizeof(int), cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_right_indices, h_right_indices, num_right_indices * sizeof(int), cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_top_indices, h_top_indices, num_top_indices * sizeof(int), cudaMemcpyHostToDevice));
+    CUDACHECK(cudaMemcpy(device_bottom_indices, h_bottom_indices, num_bottom_indices * sizeof(int), cudaMemcpyHostToDevice));
     
-    // Free temporary device memory
-    CUDACHECK(cudaFree(d_norm_p));
-    CUDACHECK(cudaFree(d_res_norm));
-    CUDACHECK(cudaFree(d_center_values));
+    // Liberar memória do host
+    free(h_left_indices);
+    free(h_right_indices);
+    free(h_top_indices);
+    free(h_bottom_indices);
     
-    (*n_out)++;  // Increment the value pointed to by the pointer
-    *t += delta_t;  // Update time
-
-    return (it < max_it) ? 0 : -1;
+    printf("Boundary indices pre-calculated and transferred to GPU\n");
+    return 0;
 }
 
-// IMPORTANTE: Versão template removida para evitar conflito com __double_as_int
-// Usamos apenas a versão especializada para double abaixo
+// Kernels otimizados para condições de contorno usando índices pré-calculados
+__global__ void set_noslip_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, int i_max, int j_max) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_indices) return;
+    
+    int idx = indices[tid];
+    
+    if (side == LEFT) {
+        u[idx] = 0.0;
+        v[idx] = -v[idx + (j_max + 2)]; // -v[1][j]
+    } else if (side == RIGHT) {
+        u[idx] = 0.0;
+        v[idx + (j_max + 2)] = -v[idx]; // v[i_max+1][j] = -v[i_max][j]
+    } else if (side == TOP) {
+        u[idx + 1] = -u[idx]; // u[i][j_max+1] = -u[i][j_max]
+        v[idx] = 0.0;
+    } else if (side == BOTTOM) {
+        u[idx] = -u[idx + 1]; // u[i][0] = -u[i][1]
+        v[idx] = 0.0;
+    }
+}
+
+__global__ void set_inflow_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, double u_fix, double v_fix, int i_max, int j_max) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_indices) return;
+    
+    int idx = indices[tid];
+    
+    if (side == LEFT) {
+        u[idx] = u_fix;
+        v[idx] = 2 * v_fix - v[idx + (j_max + 2)]; // 2 * v_fix - v[1][j]
+    } else if (side == RIGHT) {
+        u[idx] = u_fix;
+        v[idx + (j_max + 2)] = 2 * v_fix - v[idx]; // v[i_max+1][j] = 2 * v_fix - v[i_max][j]
+    } else if (side == TOP) {
+        u[idx + 1] = 2 * u_fix - u[idx]; // u[i][j_max+1] = 2 * u_fix - u[i][j_max]
+        v[idx] = v_fix;
+    } else if (side == BOTTOM) {
+        u[idx] = 2 * u_fix - u[idx + 1]; // u[i][0] = 2 * u_fix - u[i][1]
+        v[idx] = v_fix;
+    }
+}
 
 // Kernel para encontrar o valor máximo absoluto em uma matriz linearizada (versão especializada para double)
 __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, double* max_val) {
@@ -896,4 +836,173 @@ __global__ void calculate_pressure_norm_kernel(double* p, double* norm, int i_ma
     if (tid == 0) {
         atomicAdd(norm, sdata[0]);
     }
+}
+
+// Implementação completa do cudaSOR usando kernels otimizados
+int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double delta_x, double delta_y, 
+            double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
+            int problem, double f, double* t, int* n_out, double g_x, double g_y) {
+    
+    // Calcular delta_t adaptativo e parâmetros
+    max_mat_kernel_double(device_u, i_max, j_max, &u_max);
+    max_mat_kernel_double(device_v, i_max, j_max, &v_max);
+    
+    // Calcular delta_t usando n_min
+    delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
+                          delta_x / fabs(u_max), delta_y / fabs(v_max));
+    gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
+    
+    // Configurações de grid e bloco para kernels
+    dim3 blockSize(16, 16);
+    dim3 gridSize((i_max + blockSize.x) / blockSize.x, (j_max + blockSize.y) / blockSize.y);
+    dim3 boundaryBlockSize(256);
+    
+    // Configurar condições de contorno usando kernels otimizados
+    if (problem == 1) {
+        // Lid-driven cavity
+        // LEFT - no-slip
+        if (num_left_indices > 0) {
+            dim3 leftGridSize((num_left_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<leftGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_left_indices, num_left_indices, LEFT, i_max, j_max);
+            KERNEL_CHECK("set_noslip_optimized_kernel (LEFT)");
+        }
+        
+        // RIGHT - no-slip
+        if (num_right_indices > 0) {
+            dim3 rightGridSize((num_right_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<rightGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_right_indices, num_right_indices, RIGHT, i_max, j_max);
+            KERNEL_CHECK("set_noslip_optimized_kernel (RIGHT)");
+        }
+        
+        // BOTTOM - no-slip
+        if (num_bottom_indices > 0) {
+            dim3 bottomGridSize((num_bottom_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<bottomGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_bottom_indices, num_bottom_indices, BOTTOM, i_max, j_max);
+            KERNEL_CHECK("set_noslip_optimized_kernel (BOTTOM)");
+        }
+        
+        // TOP - inflow
+        if (num_top_indices > 0) {
+            dim3 topGridSize((num_top_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_inflow_optimized_kernel<<<topGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_top_indices, num_top_indices, TOP, 1.0, 0.0, i_max, j_max);
+            KERNEL_CHECK("set_inflow_optimized_kernel (TOP)");
+        }
+    } else if (problem == 2) {
+        // Periodic boundary
+        // LEFT, RIGHT, BOTTOM - no-slip
+        if (num_left_indices > 0) {
+            dim3 leftGridSize((num_left_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<leftGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_left_indices, num_left_indices, LEFT, i_max, j_max);
+        }
+        if (num_right_indices > 0) {
+            dim3 rightGridSize((num_right_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<rightGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_right_indices, num_right_indices, RIGHT, i_max, j_max);
+        }
+        if (num_bottom_indices > 0) {
+            dim3 bottomGridSize((num_bottom_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_noslip_optimized_kernel<<<bottomGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_bottom_indices, num_bottom_indices, BOTTOM, i_max, j_max);
+        }
+        
+        // TOP - periodic inflow
+        if (num_top_indices > 0) {
+            dim3 topGridSize((num_top_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
+            set_inflow_optimized_kernel<<<topGridSize, boundaryBlockSize>>>(
+                device_u, device_v, device_top_indices, num_top_indices, TOP, sin(f * (*t)), 0.0, i_max, j_max);
+        }
+    }
+    
+    // Calcular F e G
+    FG_linear_kernel<<<gridSize, blockSize>>>(
+        device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, 
+        delta_t, delta_x, delta_y, gamma_factor);
+    KERNEL_CHECK("FG_linear_kernel");
+    
+    // Calcular RHS
+    RHS_kernel<<<gridSize, blockSize>>>(
+        device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
+    KERNEL_CHECK("RHS_kernel");
+    
+    // SOR iterations
+    double dxdx = delta_x * delta_x;
+    double dydy = delta_y * delta_y;
+    
+    // Calcular norma inicial de pressão
+    double *device_norm_p;
+    CUDACHECK(cudaMalloc(&device_norm_p, sizeof(double)));
+    CUDACHECK(cudaMemset(device_norm_p, 0, sizeof(double)));
+    
+    int norm_blockSize = 256;
+    int norm_gridSize = (i_max + norm_blockSize - 1) / norm_blockSize;
+    calculate_pressure_norm_kernel<<<norm_gridSize, norm_blockSize, norm_blockSize * sizeof(double)>>>(
+        device_p, device_norm_p, i_max, j_max);
+    KERNEL_CHECK("calculate_pressure_norm_kernel");
+    
+    double h_norm_p;
+    CUDACHECK(cudaMemcpy(&h_norm_p, device_norm_p, sizeof(double), cudaMemcpyDeviceToHost));
+    h_norm_p = sqrt(h_norm_p / (i_max * j_max));
+    
+    int it = 0;
+    while (it < max_it) {
+        // Atualizar bordas de pressão
+        update_pressure_bounds_kernel<<<(i_max + j_max + 255) / 256, 256>>>(device_p, i_max, j_max);
+        KERNEL_CHECK("update_pressure_bounds_kernel");
+        
+        // Red-Black SOR
+        RedSORKernel<<<gridSize, blockSize>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
+        KERNEL_CHECK("RedSORKernel");
+        
+        BlackSORKernel<<<gridSize, blockSize>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
+        KERNEL_CHECK("BlackSORKernel");
+        
+        // Calcular resíduo
+        CalculateResidualKernel<<<gridSize, blockSize>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
+        KERNEL_CHECK("CalculateResidualKernel");
+        
+        // Calcular norma do resíduo
+        double *device_norm_res;
+        CUDACHECK(cudaMalloc(&device_norm_res, sizeof(double)));
+        CUDACHECK(cudaMemset(device_norm_res, 0, sizeof(double)));
+        
+        calculate_residual_norm_kernel<<<norm_gridSize, norm_blockSize, norm_blockSize * sizeof(double)>>>(
+            device_res, device_norm_res, i_max, j_max);
+        KERNEL_CHECK("calculate_residual_norm_kernel");
+        
+        double h_norm_res;
+        CUDACHECK(cudaMemcpy(&h_norm_res, device_norm_res, sizeof(double), cudaMemcpyDeviceToHost));
+        h_norm_res = sqrt(h_norm_res / (i_max * j_max));
+        
+        CUDACHECK(cudaFree(device_norm_res));
+        
+        // Verificar convergência
+        if (h_norm_res <= eps * (h_norm_p + 0.01)) {
+            CUDACHECK(cudaFree(device_norm_p));
+            break;
+        }
+        
+        it++;
+    }
+    
+    CUDACHECK(cudaFree(device_norm_p));
+    
+    // Atualizar u e v
+    update_uv_kernel<<<gridSize, blockSize>>>(
+        device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
+    KERNEL_CHECK("update_uv_kernel");
+    
+    // Atualizar tempo
+    *t += delta_t;
+    
+    // Retornar -1 se máximo de iterações foi excedido
+    if (it >= max_it) {
+        return -1;
+    }
+    
+    return 0;
 }

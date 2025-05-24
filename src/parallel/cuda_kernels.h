@@ -43,6 +43,8 @@ extern "C" {
     __global__ void extract_value_kernel(double* array, int idx, double* result);
     __global__ void calculate_residual_norm_kernel(double* res, double* norm, int i_max, int j_max);
     __global__ void calculate_pressure_norm_kernel(double* p, double* norm, int i_max, int j_max);
+    __global__ void set_noslip_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, int i_max, int j_max);
+    __global__ void set_inflow_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, double u_fix, double v_fix, int i_max, int j_max);
 }
 #else
 // Para compilação C/C++ normal, declarar apenas os protótipos das funções host
@@ -64,6 +66,8 @@ void reduce_sum_kernel(double* input, double* output, int size);
 void extract_value_kernel(double* array, int idx, double* result);
 void calculate_residual_norm_kernel(double* res, double* norm, int i_max, int j_max);
 void calculate_pressure_norm_kernel(double* p, double* norm, int i_max, int j_max);
+void set_noslip_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, int i_max, int j_max);
+void set_inflow_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, double u_fix, double v_fix, int i_max, int j_max);
 void RHS_kernel(double* F, double* G, double* RHS, int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 void update_uv_kernel(double* u, double* v, double* F, double* G, double* p, int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 void RedSORKernel(double* p, double* RHS, int i_max, int j_max, double omega, double dxdx, double dydy);
