@@ -358,88 +358,108 @@ __global__ void pick_max(double* du_max, double* dv_max, double* u, double* v) {
 
 double orchestration(int i_max, int j_max) {
     
-    int threads = 256;
-    int blocks = (i_max * j_max + threads - 1) / threads;
-
+    // ✅ CORREÇÃO: Configuração separada para kernels 1D e 2D
+    int threads_1d = 256;
+    int blocks_1d = (i_max * j_max + threads_1d - 1) / threads_1d;
+    
+    // ✅ Configuração 2D para kernels que usam i,j
+    dim3 block_size_2d(16, 16);  // 16x16 = 256 threads por block
+    dim3 grid_size_2d((i_max + block_size_2d.x - 1) / block_size_2d.x,
+                      (j_max + block_size_2d.y - 1) / block_size_2d.y);
 
     pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
 
-    max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
+    max_reduce_kernel<<<blocks_1d,threads_1d,threads_1d*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
 
-    max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
+    max_reduce_kernel<<<blocks_1d,threads_1d,threads_1d*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
 
     min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
     KERNEL_CHECK(); 
     SYNC_CHECK("min_and_gamma");
 
-    // ✅ CORREÇÃO: Copiar tanto gamma_val quanto delta_t de volta para o host
+    // Copiar valores para host
     CUDA_CHECK(cudaMemcpy(&gamma_val, d_gamma, sizeof(double), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(&delta_t, d_delta_t, sizeof(double), cudaMemcpyDeviceToHost));
 
     int total_boundary_points = 2 * (i_max + j_max);
-    update_boundaries_kernel<<<blocks,threads>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
+    update_boundaries_kernel<<<blocks_1d,threads_1d>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
+    KERNEL_CHECK(); SYNC_CHECK("update_boundaries");
 
-    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma_val);
+    // ✅ CORREÇÃO: Usar configuração 2D para kernels 2D
+    calculate_F<<<grid_size_2d, block_size_2d>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma_val);
+    KERNEL_CHECK(); SYNC_CHECK("calculate_F");
 
-    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma_val);
+    calculate_G<<<grid_size_2d, block_size_2d>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma_val);
+    KERNEL_CHECK(); SYNC_CHECK("calculate_G");
 
-    // now we calculate rhs
-    calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, i_max, j_max, delta_t, delta_x, delta_y);
+    // ✅ CORREÇÃO: Usar configuração 2D para calculate_RHS
+    calculate_RHS<<<grid_size_2d, block_size_2d>>>(d_RHS, d_F, d_G, d_u, d_v, i_max, j_max, delta_t, delta_x, delta_y);
+    KERNEL_CHECK(); SYNC_CHECK("calculate_RHS");
 
-    cudaDeviceSynchronize();
-    
     // Inicializar normas
     double zero = 0.0;
     CUDA_CHECK(cudaMemcpy(d_norm_p, &zero, sizeof(double), cudaMemcpyHostToDevice));
     
-    L2_norm<<<blocks, threads>>>(d_norm_p, d_p, i_max, j_max);
+    L2_norm<<<blocks_1d, threads_1d>>>(d_norm_p, d_p, i_max, j_max);
+    KERNEL_CHECK(); SYNC_CHECK("L2_norm");
 
-    cudaDeviceSynchronize();
-    
     double norm_p;
     cudaMemcpy(&norm_p, d_norm_p, sizeof(double), cudaMemcpyDeviceToHost);
     double norm = sqrt(norm_p/ ((i_max) * (j_max)));
-    int it = 0;
-    int max_it;
-    double epsilon;
-    cudaMemcpy(&max_it, d_max_it, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&epsilon, d_epsilon, sizeof(double), cudaMemcpyDeviceToHost);
     
-    while(it < max_it) {
-        calculate_ghost<<<blocks, threads>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
-        cudaDeviceSynchronize();
-        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
-        cudaDeviceSynchronize();
-        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
-        cudaDeviceSynchronize();
-        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, i_max, j_max, delta_x, delta_y);
-        cudaDeviceSynchronize();
+    int it = 0;
+    int max_it_val;
+    double epsilon_val;
+    cudaMemcpy(&max_it_val, d_max_it, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&epsilon_val, d_epsilon, sizeof(double), cudaMemcpyDeviceToHost);
+    
+    printf("Starting SOR: norm=%.6e, epsilon=%.6e, max_it=%d\n", norm, epsilon_val, max_it_val);
+    
+    while(it < max_it_val) {
+        calculate_ghost<<<blocks_1d, threads_1d>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
+        KERNEL_CHECK(); SYNC_CHECK("calculate_ghost");
+        
+        // ✅ CORREÇÃO: Usar configuração 2D para red/black kernels
+        red_kernel<<<grid_size_2d, block_size_2d>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
+        KERNEL_CHECK(); SYNC_CHECK("red_kernel");
+        
+        black_kernel<<<grid_size_2d, block_size_2d>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
+        KERNEL_CHECK(); SYNC_CHECK("black_kernel");
+        
+        residual_kernel<<<grid_size_2d, block_size_2d>>>(d_res, d_p, d_RHS, i_max, j_max, delta_x, delta_y);
+        KERNEL_CHECK(); SYNC_CHECK("residual_kernel");
 
         CUDA_CHECK(cudaMemcpy(d_norm_res, &zero, sizeof(double), cudaMemcpyHostToDevice));
-        L2_norm<<<blocks, threads>>>(d_norm_res, d_res, i_max, j_max);
-        cudaDeviceSynchronize();
+        L2_norm<<<blocks_1d, threads_1d>>>(d_norm_res, d_res, i_max, j_max);
+        KERNEL_CHECK(); SYNC_CHECK("L2_norm_res");
+        
         double norm_res;
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
-        if(temp <= epsilon * (norm + 0.01)) {
-            break; // ✅ CORREÇÃO: usar break ao invés de return 0
+        
+        printf("SOR iter %d: residual=%.6e, threshold=%.6e\n", it, temp, epsilon_val * (norm + 0.01));
+        
+        if(temp <= epsilon_val * (norm + 0.01)) {
+            printf("SOR converged at iteration %d\n", it);
+            break;
         }
         it++;
     }
 
-    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, d_F, d_G, i_max, j_max, delta_t, delta_x, delta_y);
-    cudaDeviceSynchronize();
+    // ✅ CORREÇÃO: Usar configuração 2D para update_velocity
+    update_velocity_kernel<<<grid_size_2d, block_size_2d>>>(d_u, d_v, d_p, d_F, d_G, i_max, j_max, delta_t, delta_x, delta_y);
+    KERNEL_CHECK(); SYNC_CHECK("update_velocity");
 
     double result[4];
     extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, d_delta_t, i_max, j_max, result);
-    cudaDeviceSynchronize();
+    KERNEL_CHECK(); SYNC_CHECK("extract_value");
 
     printf("U-CENTER: %.6f\n", result[0]);
     printf("V-CENTER: %.6f\n", result[1]);
     printf("P-CENTER: %.6f\n", result[2]);
-    printf("DELTA_T: %.6e\n", result[3]); // ✅ Adicionar print do delta_t
+    printf("DELTA_T: %.6e\n", result[3]);
 
-    return result[3]; // ✅ Agora retorna o delta_t correto
+    return result[3];
 }
 
 
