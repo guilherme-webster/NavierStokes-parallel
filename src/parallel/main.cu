@@ -463,8 +463,8 @@ __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, do
                               double Re, double tau, double delta_x, double delta_y) {
     
     double min = fmin(Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
-                      delta_x / du_safe);
-    min = fmin(min, delta_y / dv_safe);
+                      delta_x / fabs(*du_max) + delta_y / fabs(*dv_max));
+    min = fmin(min, delta_y / fabs(*du_max) + delta_x / fabs(*dv_max));
     min = fmin(min, 3.0);
     
     *delta_t = tau * min;
