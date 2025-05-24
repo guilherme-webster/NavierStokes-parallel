@@ -469,7 +469,7 @@ __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, do
     
     *delta_t = tau * min;
     
-    *gamma = fmax(du_safe * (*delta_t) / delta_x, dv_safe * (*delta_t) / delta_y);
+    *gamma = fmax(*du_max * (*delta_t) / delta_x, *dv_max * (*delta_t) / delta_y);
     
     // Debug prints
     printf("DEBUG: du_max=%.6e, dv_max=%.6e, delta_t=%.6e\n", *du_max, *dv_max, *delta_t);
