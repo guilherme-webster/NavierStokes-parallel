@@ -361,9 +361,6 @@ double orchestration(int i_max, int j_max) {
     int threads = 256;
     int blocks = (i_max * j_max + threads - 1) / threads;
 
-    // Copiar valores para device
-    CUDA_CHECK(cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice));
 
     pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
 
