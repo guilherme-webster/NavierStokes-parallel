@@ -27,24 +27,55 @@ typedef struct {
     int side;
 } BoundaryPoint;
 
-// arrays iniciadas em 0
-__device__ double* d_F, *d_G;
-__device__ double* d_RHS, *d_res;
-__device__ double* d_u, *d_v, *d_p;
+enum {
+    TOP = 0,
+    BOTTOM = 1,
+    LEFT = 2,
+    RIGHT = 3
+};
 
-// variaveis do device
-__device__ double d_delta_t, d_delta_x, d_delta_y, d_gamma;
-__device__ double du_max, dv_max;
+// arrays iniciadas em 0 - ponteiros locais para device
+double* d_F, *d_G;
+double* d_RHS, *d_res;
+double* d_u, *d_v, *d_p;
+
+// variaveis do device - ponteiros locais para device
+double* d_delta_t, *d_delta_x, *d_delta_y, *d_gamma;
+double* d_du_max, *d_dv_max;
 
 // variaveis tiradas do host (device pointers)
-__device__ int* d_i_max, *d_j_max;
-__device__ double* d_tau, *d_Re;
-__device__ BoundaryPoint* d_boundary_indices;
-__device__ double* d_gx, *d_gy;
-__device__ double* d_omega, *d_epsilon;
-__device__ int* d_max_it;
+int* d_i_max, *d_j_max;
+double* d_tau, *d_Re;
+BoundaryPoint* d_boundary_indices;
+double* d_gx, *d_gy;
+double* d_omega, *d_epsilon;
+int* d_max_it;
 // variables for norms
 double* d_norm_p, *d_norm_res;
+
+double** u;     // velocity x-component
+double** v;     // velocity y-component
+double** p;     // pressure
+double** F;     // F term
+double** G;     // G term
+double** res;   // SOR residuum
+double** RHS;   // RHS of poisson equation
+// Simulation parameters.
+int i_max, j_max;                   // number of grid points in each direction
+double a, b;                        // sizes of the grid
+double Re;                          // reynolds number
+double delta_t, delta_x, delta_y;   // step sizes
+double gamma;                       // weight for Donor-Cell-stencil
+double T;                           // max time for integration
+double g_x;                         // x-component of g
+double g_y;                         // y-component of g
+double tau;                         // security factor for adaptive step size
+double omega;                       // relaxation parameter
+double epsilon;                     // relative tolerance for SOR
+int max_it;                         // maximum iterations for SOR
+int n_print;                        // output to file every ..th step
+int problem;                        // problem type
+double f; 
 
 
 void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
@@ -53,11 +84,12 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
 
 void free_memory_kernel();
 
-__global__ void pick_max();
+__global__ void pick_max(double* du_max, double* dv_max, double* u, double* v);
 
 double orchestration(int i_max, int j_max);
 
-__global__ void min_and_gamma ();
+__global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, double* dv_max, 
+                              double Re, double tau, double delta_x, double delta_y);
 
 
 __device__ double atomicMax(double* address, double val);
@@ -69,7 +101,8 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
 
 BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points);
 
-__global__ void update_boundaries_kernel();
+__global__ void update_boundaries_kernel(double* u, double* v, BoundaryPoint* boundary_indices, 
+                                        int i_max, int j_max, int total_boundary_points);
 
 // Funções diferenças finitas com índices linearizados para GPU
 
@@ -109,7 +142,8 @@ __global__ void black_kernel(double* p, double* RHS, double* u, double* v, int i
     double delta_x, double delta_y, double omega) ;
 
 
-__global__ void calculate_ghost() ;
+__global__ void calculate_ghost(double* p, BoundaryPoint* boundary_indices, 
+                               int i_max, int j_max, int total_boundary_points);
 
 
 __global__ void L2_norm(double* norm, double* m, int i_max, int j_max);
@@ -118,10 +152,11 @@ __global__ void L2_norm(double* norm, double* m, int i_max, int j_max);
 __global__ void residual_kernel(double* res, double* p, double* RHS, int i_max, int j_max,
     double delta_x, double delta_y) ;
 
-__global__ void update_velocity_kernel(double* u, double* v, double* p, int i_max, int j_max,
-    double delta_t, double delta_x, double delta_y);
+__global__ void update_velocity_kernel(double* u, double* v, double* p, double* F, double* G, 
+                                      int i_max, int j_max, double delta_t, double delta_x, double delta_y);
 
-__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max,int j_max, double* result);
+__global__ void extract_value_kernel(double* u, double* v, double* p, double* delta_t_device,
+                                    int i_max, int j_max, double* result);
 
 
 /**
@@ -133,33 +168,6 @@ __global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int 
 
 int main(int argc, char* argv[])
 {
-    // Grid pointers.
-	double** u;     // velocity x-component
-	double** v;     // velocity y-component
-	double** p;     // pressure
-
-    double** F;     // F term
-    double** G;     // G term
-    double** res;   // SOR residuum
-    double** RHS;   // RHS of poisson equation
-
-    // Simulation parameters.
-    int i_max, j_max;                   // number of grid points in each direction
-    double a, b;                        // sizes of the grid
-    double Re;                          // reynolds number
-    double delta_t, delta_x, delta_y;   // step sizes
-    double gamma;                       // weight for Donor-Cell-stencil
-    double T;                           // max time for integration
-    double g_x;                         // x-component of g
-    double g_y;                         // y-component of g
-    double tau;                         // security factor for adaptive step size
-    double omega;                       // relaxation parameter
-    double epsilon;                     // relative tolerance for SOR
-    int max_it;                         // maximum iterations for SOR
-    int n_print;                        // output to file every ..th step
-    int problem;                        // problem type
-    double f;                           // frequency of periodic boundary conditions (if problem == 2)
-
     const char* param_file = "parameters.txt"; // file containing parameters
 
     // fprintf(stderr, "CUDA: Working directory test\n");
@@ -219,6 +227,7 @@ int main(int argc, char* argv[])
     // Free grid memory.
     free_memory_kernel();
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
+    free(boundary_points);  // Liberar memória do host
     return 0;
 }
 
@@ -267,8 +276,8 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMalloc((void**)&d_G, size));
     CUDA_CHECK(cudaMalloc((void**)&d_res, size));
     CUDA_CHECK(cudaMalloc((void**)&d_RHS, size));
-    CUDA_CHECK(cudaMalloc((void**)&du_max, sizeof(double)));
-    CUDA_CHECK(cudaMalloc((void**)&dv_max, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_du_max, sizeof(double)));
+    CUDA_CHECK(cudaMalloc((void**)&d_dv_max, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_delta_t, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_delta_x, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_delta_y, sizeof(double)));
@@ -284,10 +293,6 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMemset(d_res, 0, size));
     CUDA_CHECK(cudaMemset(d_RHS, 0, size));
 
-    // update device symbols for d_u and d_v so __device__ pointers are valid
-    cudaMemcpyToSymbol(d_u, &d_u, sizeof(double*));
-    cudaMemcpyToSymbol(d_v, &d_v, sizeof(double*));
-
     // variaveis copiadas do host
     CUDA_CHECK(cudaMalloc((void**)&d_tau, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_Re, sizeof(double)));
@@ -299,8 +304,6 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMalloc((void**)&d_omega, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_epsilon, sizeof(double)));
     CUDA_CHECK(cudaMalloc((void**)&d_max_it, sizeof(int)));
-    CUDA_CHECK(cudaMalloc((void**)&d_norm_p, sizeof(double)));
-    CUDA_CHECK(cudaMalloc((void**)&d_norm_res, sizeof(double)));
 
     
     cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
@@ -337,16 +340,21 @@ void free_memory_kernel() {
     cudaFree(d_max_it);
     cudaFree(d_norm_p);
     cudaFree(d_norm_res);
-
+    cudaFree(d_du_max);
+    cudaFree(d_dv_max);
+    cudaFree(d_delta_t);
+    cudaFree(d_delta_x);
+    cudaFree(d_delta_y);
+    cudaFree(d_gamma);
 }
 
 
-__global__ void pick_max() {
+__global__ void pick_max(double* du_max, double* dv_max, double* u, double* v) {
     // debug print first elements
-    double u0 = d_u[0];
-    double v0 = d_v[0];
-    du_max = u0;
-    dv_max = v0;
+    double u0 = u[0];
+    double v0 = v[0];
+    *du_max = u0;
+    *dv_max = v0;
 }
 
 
@@ -357,45 +365,56 @@ double orchestration(int i_max, int j_max) {
     int blocks = (i_max * j_max + threads - 1) / threads;
     int size = i_max * j_max;
 
+    // Copiar valores para device
+    CUDA_CHECK(cudaMemcpy(d_delta_x, &delta_x, sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_delta_y, &delta_y, sizeof(double), cudaMemcpyHostToDevice));
+
     // acha o máximo da matriz u e v
     while (size > 1){
 
-        pick_max<<<1,1>>>(); 
+        pick_max<<<1,1>>>(d_du_max, d_dv_max, d_u, d_v); 
 
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,d_du_max);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_u,d_norm_p);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v,d_dv_max);
+        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
         size /= threads;
     }
 
     LOG("launch min_and_gamma");
-    min_and_gamma<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
+    min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
+    KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
 
     LOG("launch update_boundaries");
-    update_boundaries_kernel<<<blocks,threads>>>(); KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
+    int total_boundary_points = 2 * (i_max + j_max);
+    update_boundaries_kernel<<<blocks,threads>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
+    KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
     LOG("launch calculate_F");
-    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gx,d_delta_t,d_delta_x,d_delta_y,d_gamma);
+    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,i_max,j_max,Re,g_x,delta_t,delta_x,delta_y,gamma);
     KERNEL_CHECK(); SYNC_CHECK("calculate_F"); LOG("calculate_F complete");
 
     LOG("launch calculate_G");
-    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gy,d_delta_t,d_delta_x,d_delta_y,d_gamma);
+    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,i_max,j_max,Re,g_y,delta_t,delta_x,delta_y,gamma);
     KERNEL_CHECK(); SYNC_CHECK("calculate_G"); LOG("calculate_G complete");
 
     // now we calculate rhs
     LOG("launch calculate_RHS");
-    calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, *d_i_max, *d_j_max, d_delta_t, d_delta_x, d_delta_y);
+    calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK(); SYNC_CHECK("calculate_RHS"); LOG("calculate_RHS complete");
 
     cudaDeviceSynchronize();
     
+    // Inicializar normas
+    double zero = 0.0;
+    CUDA_CHECK(cudaMemcpy(d_norm_p, &zero, sizeof(double), cudaMemcpyHostToDevice));
+    
     LOG("launch L2_norm for norm_p");
-    L2_norm<<<blocks, threads>>>(d_norm_p, d_p, *d_i_max, *d_j_max);
+    L2_norm<<<blocks, threads>>>(d_norm_p, d_p, i_max, j_max);
     KERNEL_CHECK(); SYNC_CHECK("L2_norm for norm_p"); LOG("L2_norm for norm_p complete");
 
     cudaDeviceSynchronize();
@@ -411,25 +430,26 @@ double orchestration(int i_max, int j_max) {
     
     while(it < max_it) {
         LOG("launch calculate_ghost");
-        calculate_ghost<<<blocks, threads>>>();
+        calculate_ghost<<<blocks, threads>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
         cudaDeviceSynchronize(); LOG("calculate_ghost complete");
 
         printf("RHS calculated!\n");
         // Now execute de SOR black and red
         LOG("launch red_kernel");
-        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
+        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
         cudaDeviceSynchronize(); LOG("red_kernel complete");
 
         LOG("launch black_kernel");
-        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
+        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, i_max, j_max, delta_x, delta_y, omega);
         cudaDeviceSynchronize(); LOG("black_kernel complete");
 
         LOG("launch residual_kernel");
-        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, *d_i_max, *d_j_max, d_delta_x, d_delta_y);
+        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, i_max, j_max, delta_x, delta_y);
         cudaDeviceSynchronize(); LOG("residual_kernel complete");
 
         LOG("launch L2_norm for norm_res");
-        L2_norm<<<blocks, threads>>>(d_norm_res, d_res, *d_i_max, *d_j_max);
+        CUDA_CHECK(cudaMemcpy(d_norm_res, &zero, sizeof(double), cudaMemcpyHostToDevice));
+        L2_norm<<<blocks, threads>>>(d_norm_res, d_res, i_max, j_max);
         cudaDeviceSynchronize(); LOG("L2_norm for norm_res complete");
 
         double norm_res;
@@ -442,13 +462,13 @@ double orchestration(int i_max, int j_max) {
     }
 
     printf("SOR complete!\n");
-    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, *d_i_max, *d_j_max, d_delta_t, d_delta_x, d_delta_y);
+    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, d_F, d_G, i_max, j_max, delta_t, delta_x, delta_y);
     cudaDeviceSynchronize();
     printf("Velocities updated!\n");
     // update the velocities
 
     double result[4];
-    extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, i_max, j_max, result);
+    extract_value_kernel<<<1, 1>>>(d_u, d_v, d_p, d_delta_t, i_max, j_max, result);
     cudaDeviceSynchronize();
 
     printf("U-CENTER: %.6f\n", result[0]);
@@ -460,14 +480,16 @@ double orchestration(int i_max, int j_max) {
 }
 
 
-__global__ void min_and_gamma (){
-    double min = fmin(*d_Re / 2.0 / ( 1.0 / d_delta_x / d_delta_x + 1.0 / d_delta_y / d_delta_y ), d_delta_x / fabs(du_max));
-    min = fmin(min, d_delta_y / fabs(dv_max));
+__global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, double* dv_max, 
+                              double Re, double tau, double delta_x, double delta_y) {
+    double min = fmin(Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
+                      delta_x / fabs(*du_max));
+    min = fmin(min, delta_y / fabs(*dv_max));
     min = fmin(min, 3.0);
-    d_delta_t = *d_tau * min;
-    d_gamma = fmax(du_max * d_delta_t / d_delta_x, dv_max * d_delta_t / d_delta_y);
+    *delta_t = tau * min;
+    *gamma = fmax((*du_max) * (*delta_t) / delta_x, (*dv_max) * (*delta_t) / delta_y);
     // debug print computed values
-    printf("[min_and_gamma] du_max=%f dv_max=%f d_delta_t=%f d_gamma=%f\n", du_max, dv_max, d_delta_t, d_gamma);
+    printf("[min_and_gamma] du_max=%f dv_max=%f delta_t=%f gamma=%f\n", *du_max, *dv_max, *delta_t, *gamma);
 }
 
 
@@ -559,30 +581,31 @@ BoundaryPoint* generate_boundary_indices(int i_max, int j_max, int* total_points
     return h_boundary_indices;
 }
 
-__global__ void update_boundaries_kernel() {
+__global__ void update_boundaries_kernel(double* u, double* v, BoundaryPoint* boundary_indices, 
+                                        int i_max, int j_max, int total_boundary_points) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= 2 * (*d_i_max + *d_j_max)) return;
+    if (tid >= total_boundary_points) return;
 
-    BoundaryPoint point = d_boundary_indices[tid];
+    BoundaryPoint point = boundary_indices[tid];
     int i = point.i;
     int j = point.j;
     // O vfix e ufix são fixos pois tratam apenas do caso 1 do simulador
     switch (point.side) {
         case 0: // TOP
-            d_v[i * (*d_j_max + 1) + j] = 0.0;
-            d_u[i * (*d_j_max + 2) + (j + 1)] = 2 * 1.0 - d_u[i * (*d_j_max + 2) + j];
+            v[i * (j_max + 1) + j] = 0.0;
+            u[i * (j_max + 2) + (j + 1)] = 2 * 1.0 - u[i * (j_max + 2) + j];
             break;
         case 1: // BOTTOM
-            d_v[i * (*d_j_max + 1) + j] = 0.0;
-            d_u[i * (*d_j_max + 2) + j] = 2 * 0.0 - d_u[i * (*d_j_max + 2) + (j + 1)];
+            v[i * (j_max + 1) + j] = 0.0;
+            u[i * (j_max + 2) + j] = 2 * 0.0 - u[i * (j_max + 2) + (j + 1)];
             break;
         case 2: // LEFT
-            d_u[i * (*d_j_max + 2) + j] = 0.0;
-            d_v[i * (*d_j_max + 1) + j] = 2 * 0.0 - d_v[(i + 1) * (*d_j_max + 1) + j];
+            u[i * (j_max + 2) + j] = 0.0;
+            v[i * (j_max + 1) + j] = 2 * 0.0 - v[(i + 1) * (j_max + 1) + j];
             break;
         case 3: // RIGHT
-            d_u[i * (*d_j_max + 2) + j] = 0.0;
-            d_v[i * (*d_j_max + 1) + j] = 2 * 0.0 - d_v[(i - 1) * (*d_j_max + 1) + j];
+            u[i * (j_max + 2) + j] = 0.0;
+            v[i * (j_max + 1) + j] = 2 * 0.0 - v[(i - 1) * (j_max + 1) + j];
             break;
     }
 }
@@ -770,11 +793,12 @@ __global__ void black_kernel(double* p, double* RHS, double* u, double* v, int i
 }
 
 
-__global__ void calculate_ghost() {
+__global__ void calculate_ghost(double* p, BoundaryPoint* boundary_indices, 
+                               int i_max, int j_max, int total_boundary_points) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= 2 * (*d_i_max + *d_j_max)) return;
+    if (tid >= total_boundary_points) return;
     
-    BoundaryPoint point = d_boundary_indices[tid];
+    BoundaryPoint point = boundary_indices[tid];
     int i = point.i;
     int j = point.j;
     
@@ -782,22 +806,22 @@ __global__ void calculate_ghost() {
     switch (point.side) {
         case 0: // TOP (j = j_max)
             // p[i][j_max+1] = p[i][j_max]
-            d_p[i * (*d_j_max + 2) + (j+1)] = d_p[i * (*d_j_max + 2) + j];
+            p[i * (j_max + 2) + (j+1)] = p[i * (j_max + 2) + j];
             break;
             
         case 1: // BOTTOM (j = 0)
             // p[i][0] = p[i][1]
-            d_p[i * (*d_j_max + 2) + 0] = d_p[i * (*d_j_max + 2) + 1];
+            p[i * (j_max + 2) + 0] = p[i * (j_max + 2) + 1];
             break;
             
         case 2: // LEFT (i = 0)
             // p[0][j] = p[1][j]
-            d_p[0 * (*d_j_max + 2) + j] = d_p[1 * (*d_j_max + 2) + j];
+            p[0 * (j_max + 2) + j] = p[1 * (j_max + 2) + j];
             break;
             
         case 3: // RIGHT (i = i_max+1)
             // p[i_max+1][j] = p[i_max][j]
-            d_p[(*d_i_max + 1) * (*d_j_max + 2) + j] = d_p[*d_i_max * (*d_j_max + 2) + j];
+            p[(i_max + 1) * (j_max + 2) + j] = p[i_max * (j_max + 2) + j];
             break;
     }
 }
@@ -824,21 +848,22 @@ __global__ void residual_kernel(double* res, double* p, double* RHS, int i_max, 
     }
 }
 
-__global__ void update_velocity_kernel(double* u, double* v, double* p, int i_max, int j_max,
-    double delta_t, double delta_x, double delta_y) {
+__global__ void update_velocity_kernel(double* u, double* v, double* p, double* F, double* G, 
+                                      int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
-        if (i <= i_max - 1) u[i * (j_max + 2) + j] = d_F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
-        if (j <= j_max - 1) v[i * (j_max + 1) + j] = d_G[i * (j_max + 1) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+        if (i <= i_max - 1) u[i * (j_max + 2) + j] = F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
+        if (j <= j_max - 1) v[i * (j_max + 1) + j] = G[i * (j_max + 1) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
     }
 }
 
-__global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int i_max,int j_max, double* result) {
+__global__ void extract_value_kernel(double* u, double* v, double* p, double* delta_t_device,
+                                    int i_max, int j_max, double* result) {
     int idx = (i_max / 2) * (j_max + 2) + (j_max / 2);
-    result[0] = d_u[idx];
-    result[1] = d_v[idx];
-    result[2] = d_p[idx];
-    result[3] = d_delta_t;
+    result[0] = u[idx];
+    result[1] = v[idx];
+    result[2] = p[idx];
+    result[3] = *delta_t_device;
 }
