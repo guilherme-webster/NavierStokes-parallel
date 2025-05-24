@@ -214,7 +214,6 @@ int main(int argc, char* argv[])
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
         t += orchestration(i_max, j_max);
-
         n++;
     }
 
@@ -373,9 +372,12 @@ double orchestration(int i_max, int j_max) {
     max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(i_max,j_max,d_v,d_norm_res);
 
     min_and_gamma<<<1,1>>>(d_delta_t, d_gamma, d_du_max, d_dv_max, Re, tau, delta_x, delta_y); 
+    KERNEL_CHECK(); 
+    SYNC_CHECK("min_and_gamma");
 
-    // Copiar gamma_val de volta para o host
+    // ✅ CORREÇÃO: Copiar tanto gamma_val quanto delta_t de volta para o host
     CUDA_CHECK(cudaMemcpy(&gamma_val, d_gamma, sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&delta_t, d_delta_t, sizeof(double), cudaMemcpyDeviceToHost));
 
     int total_boundary_points = 2 * (i_max + j_max);
     update_boundaries_kernel<<<blocks,threads>>>(d_u, d_v, d_boundary_indices, i_max, j_max, total_boundary_points); 
@@ -423,7 +425,7 @@ double orchestration(int i_max, int j_max) {
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
         if(temp <= epsilon * (norm + 0.01)) {
-            return 0;
+            break; // ✅ CORREÇÃO: usar break ao invés de return 0
         }
         it++;
     }
@@ -438,8 +440,9 @@ double orchestration(int i_max, int j_max) {
     printf("U-CENTER: %.6f\n", result[0]);
     printf("V-CENTER: %.6f\n", result[1]);
     printf("P-CENTER: %.6f\n", result[2]);
+    printf("DELTA_T: %.6e\n", result[3]); // ✅ Adicionar print do delta_t
 
-    return result[3];
+    return result[3]; // ✅ Agora retorna o delta_t correto
 }
 
 
