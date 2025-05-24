@@ -408,14 +408,12 @@ double orchestration(int i_max, int j_max) {
     double norm = sqrt(norm_p/ ((i_max) * (j_max)));
     
     int it = 0;
-    int max_it_val;
     double epsilon_val;
-    cudaMemcpy(&max_it_val, d_max_it, sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&epsilon_val, d_epsilon, sizeof(double), cudaMemcpyDeviceToHost);
     
-    printf("Starting SOR: norm=%.6e, epsilon=%.6e, max_it=%d\n", norm, epsilon_val, max_it_val);
+    printf("Starting SOR: norm=%.6e, epsilon=%.6e, max_it=%d\n", norm, epsilon_val, max_it);
     
-    while(it < max_it_val) {
+    while(it < max_it) {
         calculate_ghost<<<blocks_1d, threads_1d>>>(d_p, d_boundary_indices, i_max, j_max, total_boundary_points);
         KERNEL_CHECK(); SYNC_CHECK("calculate_ghost");
         
@@ -436,8 +434,6 @@ double orchestration(int i_max, int j_max) {
         double norm_res;
         cudaMemcpy(&norm_res, d_norm_res, sizeof(double), cudaMemcpyDeviceToHost);
         double temp = sqrt(norm_res / ((i_max) * (j_max)));
-        
-        printf("SOR iter %d: residual=%.6e, threshold=%.6e\n", it, temp, epsilon_val * (norm + 0.01));
         
         if(temp <= epsilon_val * (norm + 0.01)) {
             printf("SOR converged at iteration %d\n", it);

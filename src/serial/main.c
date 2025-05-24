@@ -55,7 +55,6 @@ int main(int argc, char* argv[])
     int n_print;                        // output to file every ..th step
     int problem;                        // problem type
     double f;                           // frequency of periodic boundary conditions (if problem == 2)
-
     // default parameter file
     const char* param_file = "parameters.txt";
 
