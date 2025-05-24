@@ -5,6 +5,17 @@
 #include <math.h>
 #include <stdio.h>
 
+// Declare external CUDA global variables
+extern double *device_p;
+extern double *device_u;
+extern double *device_v;
+extern double *device_res;
+extern double *device_RHS;
+extern double *device_F;
+extern double *device_G;
+extern double *device_dpdx;
+extern double *device_dpdy;
+
 // Estrutura para armazenar valores finais para impressão
 typedef struct {
     double u_center;
