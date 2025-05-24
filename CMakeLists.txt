@@ -21,8 +21,6 @@ set(SOURCES
 set(CUDA_SOURCES
     src/parallel/main.cu
     src/parallel/io.cu
-    src/parallel/boundaries.cu
-    src/parallel/integration.cu
     src/parallel/memory.cu
 )
 

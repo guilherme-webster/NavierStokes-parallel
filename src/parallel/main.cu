@@ -13,22 +13,26 @@
 
 #include "memory.h"
 #include "io.h"
-#include "integration.h"
-#include "boundaries.h"
 
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
 
+#ifndef BOUNDARY_TYPES_H
+#define BOUNDARY_TYPES_H
+
 #define LEFT 0
 #define RIGHT 1
 #define BOTTOM 2
 #define TOP 3
-struct BoundaryPoint {
+
+typedef struct {
     int i;
     int j;
     int direction; // 0: LEFT, 1: RIGHT, 2: BOTTOM, 3: TOP
-};
+} BoundaryPoint;
+
+#endif // BOUNDARY_TYPES_H
 
 // Arrays para armazenar pontos de borda pré-calculados
 BoundaryPoint *h_noslip_left_points;
@@ -160,6 +164,7 @@ int main(int argc, char* argv[])
     // Set step size in space.
     double delta_x = a / i_max;
     double delta_y = b / j_max;
+    double delta_t = 0.0; // Initialize delta_t
 
     double *d_u, *d_v, *d_p;
     double *d_F, *d_G, *d_res, *d_RHS;
