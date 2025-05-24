@@ -36,6 +36,7 @@ double *d_u, *d_v, *d_p;
 double *d_delta_x, *d_delta_y, *d_gamma;
 double *du_max, *dv_max;
 double *d_delta_t;
+double *delta_t;
 int *d_i_max, *d_j_max;
 double *d_tau, *d_Re;
 BoundaryPoint *d_boundary_indices;
@@ -360,8 +361,8 @@ __global__ void pick_max() {
     // debug print first elements
     double u0 = d_u[0];
     double v0 = d_v[0]; 
-    du_max = u0;
-    dv_max = v0;
+    *du_max = u0;
+    *dv_max = v0;
 }
 
 
