@@ -826,5 +826,5 @@ __global__ void extract_value_kernel(double* u, double* v, double* p, double* de
     result[2] = p[idx];
     result[3] = *delta_t_device;
     // Print delta_t value for debugging
-    
+    printf("Delta_t: %.6f\n", *delta_t_device);
 }
