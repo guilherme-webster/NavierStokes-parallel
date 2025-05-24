@@ -86,10 +86,17 @@ int main(int argc, char* argv[])
     while (t < T) {
 
     	// Adaptive stepsize and weight factor for Donor-Cell
-        printf("delta_x: %.6f delta_y: %.6f\n", delta_x, delta_y);
         double u_max = max_mat(i_max, j_max, u);
         double v_max = max_mat(i_max, j_max, v);
         printf("u_max: %.6f v_max: %.6f\n", u_max, v_max);
+        // Print all values of u matrix
+        printf("u matrix values at time %.6f:\n", t);
+        for (int i = 0; i <= i_max; i++) {
+            for (int j = 0; j <= j_max; j++) {
+                printf("u[%d][%d] = %.6f\n", i, j, u[i][j]);
+            }
+        }
+        printf("\n");
     	delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
 

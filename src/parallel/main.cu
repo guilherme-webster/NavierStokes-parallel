@@ -202,10 +202,25 @@ int main(int argc, char* argv[])
         // Calcular u_max e v_max diretamente na GPU
         double u_max = find_max_parallel(d_u, (i_max+2) * (j_max+2));
         double v_max = find_max_parallel(d_v, (i_max+2) * (j_max+2));
-        printf("u_max: %.6f, v_max: %.6f\n", u_max, v_max);
+        // Alocar memória temporária no host para u
+        double *h_u = (double*)malloc(size);
+        
+        // Copiar dados de u do device para o host
+        cudaMemcpy(h_u, d_u, size, cudaMemcpyDeviceToHost);
+        
+        // Imprimir todos os valores de u
+        printf("Valores de u (%d x %d):\n", i_max+2, j_max+2);
+        for (int j = 0; j < j_max+2; j++) {
+            for (int i = 0; i < i_max+2; i++) {
+            printf("%.6f ", h_u[j * (i_max+2) + i]);
+            }
+            printf("\n");
+        }
+        
+        // Liberar memória temporária
+        free(h_u);
         
         // Calcular delta_t e gamma na CPU
-        printf("delta_x: %.6f, delta_y: %.6f\n", delta_x, delta_y);
         delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
                           delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
