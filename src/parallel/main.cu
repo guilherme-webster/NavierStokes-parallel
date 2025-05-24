@@ -85,9 +85,9 @@ void calculate_RHS_parallel(double *d_RHS, double *d_F, double *d_G,
                           int i_max, int j_max, double delta_t, 
                           double delta_x, double delta_y);
 
-__global__ void find_max_kernel(double *data, double *result, int size);
+__global__ void find_max_kernel(double *data, double *result, int i_max, int j_max);
 
-double find_max_parallel(double *d_data, int size);
+double find_max_parallel(double *d_data, int i_max, int j_max);
 
 int sor_parallel(double *d_p, int i_max, int j_max, double delta_x, double delta_y, 
                 double *d_res, double *d_RHS, double omega, double epsilon, int max_it);
@@ -199,26 +199,10 @@ int main(int argc, char* argv[])
         // Garantir que d_u e d_v estejam atualizados na GPU
         // (Este código deve ser executado em outro lugar - antes do loop ou na iteração anterior)
         
-        // Calcular u_max e v_max diretamente na GPU
-        double u_max = find_max_parallel(d_u, (i_max+2) * (j_max+2));
-        double v_max = find_max_parallel(d_v, (i_max+2) * (j_max+2));
-        // Alocar memória temporária no host para u
-        double *h_u = (double*)malloc(size);
-        
-        // Copiar dados de u do device para o host
-        cudaMemcpy(h_u, d_u, size, cudaMemcpyDeviceToHost);
-        
-        // Imprimir todos os valores de u
-        printf("Valores de u (%d x %d):\n", i_max+2, j_max+2);
-        for (int j = 0; j < j_max+2; j++) {
-            for (int i = 0; i < i_max+2; i++) {
-            printf("%.6f ", h_u[j * (i_max+2) + i]);
-            }
-            printf("\n");
-        }
-        
-        // Liberar memória temporária
-        free(h_u);
+        // Calcular u_max e v_max diretamente na GPU, considerando apenas pontos internos
+        double u_max = find_max_parallel(d_u, i_max, j_max);
+        double v_max = find_max_parallel(d_v, i_max, j_max);
+        printf("u_max: %.6f, v_max: %.6f\n", u_max, v_max);
         
         // Calcular delta_t e gamma na CPU
         delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
@@ -431,17 +415,23 @@ void free_boundary_points() {
 }
 
 // Kernel de redução paralela para encontrar o valor máximo absoluto
-__global__ void find_max_kernel(double *data, double *result, int size) {
-    // Definindo tamanho fixo da memória compartilhada - 256 é um bom valor (múltiplo de 32)
+__global__ void find_max_kernel(double *data, double *result, int i_max, int j_max) {
+    // Memória compartilhada para redução
     __shared__ double sdata[256];
     
     unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Calcular coordenadas i,j a partir do índice linearizado
+    int i = (idx % i_max) + 1;
+    int j = (idx / i_max) + 1;
     
     // Inicialização
     double threadMax = 0.0;
-    if (i < size) {
-        threadMax = fabs(data[i]);
+    if (idx < i_max * j_max) {
+        // Calcular índice para acessar o array linear representando a matriz 2D
+        int data_idx = j * (i_max + 2) + i;
+        threadMax = fabs(data[data_idx]);
     }
     
     // Carregar na memória compartilhada
@@ -464,17 +454,17 @@ __global__ void find_max_kernel(double *data, double *result, int size) {
 }
 
 // Função para calcular o máximo em paralelo
-double find_max_parallel(double *d_data, int size) {
-    int blockSize = 256; // Mesmo tamanho da memória compartilhada
-    int numBlocks = (size + blockSize - 1) / blockSize;
+double find_max_parallel(double *d_data, int i_max, int j_max) {
+    int blockSize = 256; // Tamanho do bloco para o kernel
+    int numBlocks = (i_max * j_max + blockSize - 1) / blockSize;
     
     // Alocar e inicializar resultado na GPU
     double *d_max;
     cudaMalloc((void**)&d_max, sizeof(double));
     cudaMemset(d_max, 0, sizeof(double));
     
-    // Lançar kernel de redução
-    find_max_kernel<<<numBlocks, blockSize>>>(d_data, d_max, size);
+    // Lançar kernel de redução (apenas para pontos internos)
+    find_max_kernel<<<numBlocks, blockSize>>>(d_data, d_max, i_max, j_max);
     
     // Copiar resultado para CPU
     double h_max;
@@ -736,7 +726,7 @@ int sor_parallel(double *d_p, int i_max, int j_max, double delta_x, double delta
             cudaDeviceSynchronize();
             
             // Encontrar o resíduo máximo usando a função já existente
-            max_res = find_max_parallel(d_res, (i_max+2) * (j_max+2));
+            max_res = find_max_parallel(d_res, i_max, j_max);
             
             // Verificar convergência
             if (max_res < epsilon) break;
