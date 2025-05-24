@@ -66,7 +66,6 @@ int main(int argc, char* argv[])
     
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
-    printf("Initialized!\n");
 
     // Set step size in space.
     delta_x = a / i_max;
@@ -74,7 +73,6 @@ int main(int argc, char* argv[])
 
     // Allocate memory for grids.
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated.\n");
 
     // Time loop.
     double t = 0;
@@ -109,12 +107,10 @@ int main(int argc, char* argv[])
             exit(EXIT_FAILURE);
         }
 
-        printf("Conditions set!\n");
 
         // Calculate F and G.
         FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
 
-        printf("F, G calculated!\n");
 
         // RHS of Poisson equation.
         for (i = 1; i <= i_max; i++ ) {
@@ -122,11 +118,9 @@ int main(int argc, char* argv[])
                 RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
             }
         }
-        printf("RHS calculated!\n");
 
         // Execute SOR step.
         if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
-        printf("SOR complete!\n");
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
@@ -135,34 +129,22 @@ int main(int argc, char* argv[])
                 if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
             }
         }
-        printf("Velocities updatet!\n");
 
-        // Print to file every ..th step.
-        // if (n % n_print == 0) {
         //     char out_prefix[12];
         //     sprintf(out_prefix, "out/%d", n_out);
         //     output(i_max, j_max, u, v, p, t, a, b, out_prefix);
         //     n_out++;
         // }
 
-        if (n % n_print == 0) {
-            // Instead of outputting to files, print the data to stdout
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
 
-            // Printing some key values from u, v, p matrices
-            // For example, print central values and some boundary values
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
 
-            // Add more key values as needed
-            n_out++;
-        }
 
         t += delta_t;
         n++;
     }
-
+    printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+    printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+    printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 

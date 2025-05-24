@@ -509,19 +509,16 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         return -1;
     }
     CUDACHECK(cudaDeviceSynchronize());
-    printf("Conditions set!\n");
 
     // 2. FG calculation (GPU)
     dim3 block2D(16, 16);
     dim3 grid2D((i_max+block2D.x-1)/block2D.x, (j_max+block2D.y-1)/block2D.y);
     FG_linear_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma_factor);
     CUDACHECK(cudaDeviceSynchronize());
-    printf("F, G calculated!\n");
 
     // 3. RHS calculation (GPU)
     RHS_kernel<<<grid2D, block2D>>>(device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
     CUDACHECK(cudaDeviceSynchronize());
-    printf("RHS calculated!\n");
 
     // 4. SOR loop (GPU calculations)
     dim3 blockSOR(16, 16);
@@ -562,7 +559,6 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
         }
         it++;
     }
-    printf("SOR complete!\n");
     
     // 4. Update u and v using update_uv_kernel
     update_uv_kernel<<<grid2D, block2D>>>(device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
@@ -593,10 +589,12 @@ int cudaSOR(double** p,double** u,double** v, int i_max, int j_max, double delta
     CUDACHECK(cudaMemcpy(h_center_values, d_center_values, 3 * sizeof(double), cudaMemcpyDeviceToHost));
     
     // Output central values for debugging
+    /*
     printf("TIMESTEP: %d TIME: %.6f\n", (*n_out), *t);
     printf("U-CENTER: %.6f\n", h_center_values[0]);
     printf("V-CENTER: %.6f\n", h_center_values[1]);
     printf("P-CENTER: %.6f\n", h_center_values[2]);
+    */
     
     // Free temporary device memory
     CUDACHECK(cudaFree(d_norm_p));

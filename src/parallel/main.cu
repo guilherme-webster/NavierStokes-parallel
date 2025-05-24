@@ -5,6 +5,16 @@
 #include <math.h>
 #include <stdio.h>
 
+// Estrutura para armazenar valores finais para impressão
+typedef struct {
+    double u_center;
+    double v_center;
+    double p_center;
+    double final_time;
+    int iterations;
+    double execution_time;
+} SimulationResult;
+
 int main(int argc, char* argv[])
 {
     double** u;     
@@ -49,13 +59,12 @@ int main(int argc, char* argv[])
         fprintf(stderr, "Failed to initialize parameters\n");
         return 1;
     }
-    printf("Initialized!\n");
 
     delta_x = a / i_max;
     delta_y = b / j_max;
 
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated.\n");
+
     // Verificar alocações antes de inicializar CUDA
     if (p == NULL || u == NULL || v == NULL || res == NULL || RHS == NULL || F == NULL || G == NULL) {
         fprintf(stderr, "ERROR: Memory allocation failed before CUDA initialization\n");
@@ -75,12 +84,16 @@ int main(int argc, char* argv[])
     int n = 0;
     int n_out = 0;
 
+    // Estrutura para armazenar resultados finais
+    SimulationResult result = {0};
+
     clock_t start = clock();
 
     while (t < T) {
-        if (n % n_print == 0) {
+        // Remover print intermediário
+        /*if (n % n_print == 0) {
             printf("%.5f / %.5f\n---------------------\n", t, T);
-        }
+        }*/
         
         int sor_result = cudaSOR(p, u, v, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, F, G, tau,
                                  Re, problem, f, &t, &n_out, g_x, g_y);
@@ -91,6 +104,43 @@ int main(int argc, char* argv[])
     
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+    
+    // Obter valores finais
+    double h_center_values[3];
+    int center_i = i_max/2;
+    int center_j = j_max/2;
+    int center_idx = center_i * (j_max + 2) + center_j;
+    
+    // Alocar memória temporária para valores centrais
+    double *d_center_values;
+    cudaMalloc(&d_center_values, 3 * sizeof(double));
+    
+    // Extrair valores centrais
+    extract_value_kernel<<<1, 1>>>(device_u, center_idx, &d_center_values[0]);
+    extract_value_kernel<<<1, 1>>>(device_v, center_idx, &d_center_values[1]);
+    extract_value_kernel<<<1, 1>>>(device_p, center_idx, &d_center_values[2]);
+    cudaDeviceSynchronize();
+    
+    // Copiar para o host
+    cudaMemcpy(h_center_values, d_center_values, 3 * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaFree(d_center_values);
+    
+    // Armazenar resultados na estrutura
+    result.u_center = h_center_values[0];
+    result.v_center = h_center_values[1];
+    result.p_center = h_center_values[2];
+    result.final_time = t;
+    result.iterations = n;
+    result.execution_time = time_spent;
+    
+    // Print final dos resultados
+
+    printf("U-CENTER: %.6f\n", result.u_center);
+    printf("V-CENTER: %.6f\n", result.v_center);
+    printf("P-CENTER: %.6f\n", result.p_center);
+
+    
+    // Continuar usando stderr para o tempo de execução (para compatibilidade)
     fprintf(stderr, "%.6f", time_spent);
     
     // Liberar memória CUDA
