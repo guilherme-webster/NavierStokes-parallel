@@ -846,13 +846,32 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
     // Calcular delta_t adaptativo e parâmetros
     int blockSize = 256;
     int gridSize = (i_max * j_max + blockSize - 1) / blockSize;
-    max_mat_kernel_double<<<gridSize, blockSize>>>(device_u, i_max, j_max, &u_max);
+    
+    // Alocar memória device para u_max e v_max
+    double *device_u_max, *device_v_max;
+    CUDACHECK(cudaMalloc(&device_u_max, sizeof(double)));
+    CUDACHECK(cudaMalloc(&device_v_max, sizeof(double)));
+    
+    // Inicializar com zero
+    CUDACHECK(cudaMemset(device_u_max, 0, sizeof(double)));
+    CUDACHECK(cudaMemset(device_v_max, 0, sizeof(double)));
+    
+    // Chamar kernels com ponteiros device
+    max_mat_kernel_double<<<gridSize, blockSize>>>(device_u, i_max, j_max, device_u_max);
     KERNEL_CHECK("max_mat_kernel_double");
-    max_mat_kernel_double<<<gridSize, blockSize>>>(device_v, i_max, j_max, &v_max);
+    max_mat_kernel_double<<<gridSize, blockSize>>>(device_v, i_max, j_max, device_v_max);
     KERNEL_CHECK("max_mat_kernel_double");
     
+    // Copiar resultados de volta para host
+    CUDACHECK(cudaMemcpy(&u_max, device_u_max, sizeof(double), cudaMemcpyDeviceToHost));
+    CUDACHECK(cudaMemcpy(&v_max, device_v_max, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Liberar memória device temporária
+    CUDACHECK(cudaFree(device_u_max));
+    CUDACHECK(cudaFree(device_v_max));
+    
     delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
-                          delta_x / fabs(u_max), delta_y / fabs(v_max));
+                         delta_x / fabs(u_max), delta_y / fabs(v_max));
     gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
     // Configurações de grid e bloco para kernels
