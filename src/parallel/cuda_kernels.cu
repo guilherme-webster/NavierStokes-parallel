@@ -551,6 +551,45 @@ __global__ void set_inflow_optimized_kernel(double* u, double* v, int* indices, 
     }
 }
 
+// Kernel combinado para todas as condições de contorno
+__global__ void boundary_conditions_combined_kernel(double* u, double* v, int i_max, int j_max, 
+                                                  int problem, double f, double t) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // BORDAS HORIZONTAIS (i=1..i_max, j=0 ou j=j_max)
+    if (idx < i_max) {
+        int i = idx + 1;
+        
+        // BOTTOM (j=0)
+        u[i * (j_max + 2) + 0] = -u[i * (j_max + 2) + 1];
+        v[i * (j_max + 2) + 0] = 0.0;
+        
+        // TOP (j=j_max)
+        if (problem == 1) {
+            // Lid-driven cavity
+            u[i * (j_max + 2) + j_max+1] = -u[i * (j_max + 2) + j_max] + 2.0; // u=1.0 no topo
+            v[i * (j_max + 2) + j_max] = 0.0;
+        } else if (problem == 2) {
+            // Periodic boundary
+            u[i * (j_max + 2) + j_max+1] = -u[i * (j_max + 2) + j_max] + 2.0 * sin(f * t);
+            v[i * (j_max + 2) + j_max] = 0.0;
+        }
+    }
+    
+    // BORDAS VERTICAIS (i=0 ou i=i_max, j=1..j_max)
+    if (idx < j_max) {
+        int j = idx + 1;
+        
+        // LEFT (i=0)
+        u[0 * (j_max + 2) + j] = 0.0;
+        v[0 * (j_max + 2) + j] = -v[1 * (j_max + 2) + j];
+        
+        // RIGHT (i=i_max)
+        u[i_max * (j_max + 2) + j] = 0.0;
+        v[(i_max+1) * (j_max + 2) + j] = -v[i_max * (j_max + 2) + j];
+    }
+}
+
 // Kernel para encontrar o valor máximo absoluto em uma matriz linearizada (versão especializada para double)
 __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, double* max_val) {
     // Verificações de parâmetros
@@ -616,447 +655,62 @@ __global__ void max_mat_kernel_double(const double* mat, int i_max, int j_max, d
     }
 }
 
-// Kernel para calcular dp_dx e dp_dy em arrays de saída
-__global__ void dp_dx_kernel(const double* p, double* out, int i_max, int j_max, double delta_x) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    if (i <= i_max && j <= j_max) {
-        out[i * (j_max + 2) + j] = (p[i * (j_max + 2) + j+1] - p[i * (j_max + 2) + j]) / delta_x;
-    }
-}
-__global__ void dp_dy_kernel(const double* p, double* out, int i_max, int j_max, double delta_y) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    if (i <= i_max && j <= j_max) {
-        out[i * (j_max + 2) + j] = (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_y;
-    }
-}
-
-// Kernel para set_noslip_linear
-__global__ void set_noslip_linear_kernel(int i_max, int j_max, double* u, double* v, int side) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    if (side == LEFT && idx <= j_max) {
-        u[0 * (j_max + 2) + idx] = 0.0;
-        v[0 * (j_max + 2) + idx] = -v[1 * (j_max + 2) + idx];
-    } else if (side == RIGHT && idx <= j_max) {
-        u[i_max * (j_max + 2) + idx] = 0.0;
-        v[(i_max+1) * (j_max + 2) + idx] = -v[i_max * (j_max + 2) + idx];
-    } else if (side == TOP && idx <= i_max) {
-        u[idx * (j_max + 2) + j_max+1] = -u[idx * (j_max + 2) + j_max];
-        v[idx * (j_max + 2) + j_max] = 0.0;
-    } else if (side == BOTTOM && idx <= i_max) {
-        u[idx * (j_max + 2) + 0] = -u[idx * (j_max + 2) + 1];
-        v[idx * (j_max + 2) + 0] = 0.0;
-    }
-}
-
-// Kernel para set_inflow_linear
-__global__ void set_inflow_linear_kernel(int i_max, int j_max, double* u, double* v, int side, double u_fix, double v_fix) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    if (side == TOP && idx <= i_max) {
-        u[idx * (j_max + 2) + j_max+1] = 2 * u_fix - u[idx * (j_max + 2) + j_max];
-        v[idx * (j_max + 2) + j_max] = v_fix;
-    } else if (side == BOTTOM && idx <= i_max) {
-        u[idx * (j_max + 2) + 0] = 2 * u_fix - u[idx * (j_max + 2) + 1];
-        v[idx * (j_max + 2) + 0] = v_fix;
-    } else if (side == LEFT && idx <= j_max) {
-        u[0 * (j_max + 2) + idx] = u_fix;
-        v[0 * (j_max + 2) + idx] = 2 * v_fix - v[1 * (j_max + 2) + idx];
-    } else if (side == RIGHT && idx <= j_max) {
-        u[i_max * (j_max + 2) + idx] = u_fix;
-        v[(i_max+1) * (j_max + 2) + idx] = 2 * v_fix - v[i_max * (j_max + 2) + idx];
-    }
-}
-
-// Kernel para calcular F e G (Navier-Stokes)
-__global__ void FG_linear_kernel(double* u, double* v, double* F, double* G, int i_max, int j_max, double Re, double g_x, double g_y, double delta_t, double delta_x, double delta_y, double gamma_factor) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    if (i <= i_max - 1 && j <= j_max) {
-        // F (u preditor)
-        double du2dx = ((u[(i+1)*(j_max+2)+j] + u[i*(j_max+2)+j])*(u[(i+1)*(j_max+2)+j] + u[i*(j_max+2)+j])
-                        - (u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j])*(u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j])) / (4.0*delta_x);
-        double duvdy = ((v[i*(j_max+2)+j] + v[(i+1)*(j_max+2)+j])*(u[i*(j_max+2)+j+1] + u[i*(j_max+2)+j])
-                        - (v[i*(j_max+2)+j-1] + v[(i+1)*(j_max+2)+j-1])*(u[i*(j_max+2)+j] + u[i*(j_max+2)+j-1])) / (4.0*delta_y);
-        double laplu = (u[(i+1)*(j_max+2)+j] - 2.0*u[i*(j_max+2)+j] + u[(i-1)*(j_max+2)+j]) / (delta_x*delta_x)
-                        + (u[i*(j_max+2)+j+1] - 2.0*u[i*(j_max+2)+j] + u[i*(j_max+2)+j-1]) / (delta_y*delta_y);
-        F[i*(j_max+2)+j] = u[i*(j_max+2)+j] + delta_t * ((laplu/Re) - du2dx - duvdy + g_x);
-    }
-    if (i <= i_max && j <= j_max - 1) {
-        // G (v preditor)
-        double dv2dy = ((v[i*(j_max+2)+j+1] + v[i*(j_max+2)+j])*(v[i*(j_max+2)+j+1] + v[i*(j_max+2)+j])
-                        - (v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1])*(v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1])) / (4.0*delta_y);
-        double duvdx = ((u[i*(j_max+2)+j] + u[i*(j_max+2)+j+1])*(v[(i+1)*(j_max+2)+j] + v[i*(j_max+2)+j])
-                        - (u[(i-1)*(j_max+2)+j] + u[(i-1)*(j_max+2)+j+1])*(v[i*(j_max+2)+j] + v[(i-1)*(j_max+2)+j])) / (4.0*delta_x);
-        double laplv = (v[(i+1)*(j_max+2)+j] - 2.0*v[i*(j_max+2)+j] + v[(i-1)*(j_max+2)+j]) / (delta_x*delta_x)
-                        + (v[i*(j_max+2)+j+1] - 2.0*v[i*(j_max+2)+j] + v[i*(j_max+2)+j-1]) / (delta_y*delta_y);
-        G[i*(j_max+2)+j] = v[i*(j_max+2)+j] + delta_t * ((laplv/Re) - dv2dy - duvdx + g_y);
-    }
-}
-
-// Kernel para calcular RHS
-__global__ void RHS_kernel(double* F, double* G, double* RHS, int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    if (i <= i_max && j <= j_max) {
-        RHS[i*(j_max+2)+j] = ((F[i*(j_max+2)+j] - F[(i-1)*(j_max+2)+j]) / delta_x
-                            + (G[i*(j_max+2)+j] - G[i*(j_max+2)+j-1]) / delta_y) / delta_t;
-    }
-}
-
-// Kernel para atualizar u e v após SOR
-__global__ void update_uv_kernel(double* u, double* v, double* F, double* G, double* p, int i_max, int j_max, double delta_t, double delta_x, double delta_y) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    if (i <= i_max - 1 && j <= j_max) {
-        u[i*(j_max+2)+j] = F[i*(j_max+2)+j] - delta_t * (p[(i+1)*(j_max+2)+j] - p[i*(j_max+2)+j]) / delta_x;
-    }
-    if (i <= i_max && j <= j_max - 1) {
-        v[i*(j_max+2)+j] = G[i*(j_max+2)+j] - delta_t * (p[i*(j_max+2)+j+1] - p[i*(j_max+2)+j]) / delta_y;
-    }
-}
-
-// Kernel para atualizar bordas/ghost cells de pressão
-__global__ void update_pressure_bounds_kernel(double* p, int i_max, int j_max) {
-    // Thread index
-    int idx = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    
-    // Atualiza bordas em i
-    if (idx <= i_max) {
-        // Bottom boundary
-        p[idx * (j_max + 2) + 0] = p[idx * (j_max + 2) + 1];
-        // Top boundary
-        p[idx * (j_max + 2) + (j_max + 1)] = p[idx * (j_max + 2) + j_max];
+// Kernel combinado para encontrar os valores máximos de u e v simultaneamente
+__global__ void max_mat_combined_kernel(const double* u_mat, const double* v_mat, int i_max, int j_max, double* u_max, double* v_max) {
+    // Verificações de parâmetros
+    if (u_mat == NULL || v_mat == NULL || u_max == NULL || v_max == NULL || i_max <= 0 || j_max <= 0) {
+        return;
     }
     
-    // Atualiza bordas em j
-    if (idx <= j_max) {
-        // Left boundary
-        p[0 * (j_max + 2) + idx] = p[1 * (j_max + 2) + idx];
-        // Right boundary
-        p[(i_max + 1) * (j_max + 2) + idx] = p[i_max * (j_max + 2) + idx];
-    }
-}
-
-// Kernel para redução de soma (para calcular norma)
-__global__ void reduce_sum_kernel(double* input, double* output, int size) {
-    extern __shared__ double sdata[];
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ double u_sdata[256];
+    __shared__ double v_sdata[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = (i_max) * (j_max);
+    double local_u_max = 0.0;
+    double local_v_max = 0.0;
     
-    // Carregar dados da memória global para compartilhada
-    sdata[tid] = (i < size) ? input[i] : 0;
+    // Encontrar máximos locais para u e v simultaneamente
+    for (int k = idx; k < total; k += blockDim.x * gridDim.x) {
+        int i = 1 + k / j_max;
+        int j = 1 + k % j_max;
+        
+        if (i >= 0 && i <= i_max+1 && j >= 0 && j <= j_max+1) {
+            double u_val = fabs(u_mat[i * (j_max + 2) + j]);
+            double v_val = fabs(v_mat[i * (j_max + 2) + j]);
+            if (u_val > local_u_max) local_u_max = u_val;
+            if (v_val > local_v_max) local_v_max = v_val;
+        }
+    }
+    
+    // Armazenar em memória compartilhada
+    u_sdata[tid] = local_u_max;
+    v_sdata[tid] = local_v_max;
     __syncthreads();
     
-    // Realizar redução na memória compartilhada
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+    // Redução em bloco para ambos valores
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
         if (tid < s) {
-            sdata[tid] += sdata[tid + s];
+            if (u_sdata[tid + s] > u_sdata[tid]) u_sdata[tid] = u_sdata[tid + s];
+            if (v_sdata[tid + s] > v_sdata[tid]) v_sdata[tid] = v_sdata[tid + s];
         }
         __syncthreads();
     }
     
-    // Thread 0 escreve o resultado para a saída
+    // Thread 0 atualiza os máximos globais
     if (tid == 0) {
-        output[blockIdx.x] = sdata[0];
+        // Usar atomicMax para atualização segura dos máximos
+        atomicMax((unsigned long long int*)u_max, __double_as_longlong(u_sdata[0]));
+        atomicMax((unsigned long long int*)v_max, __double_as_longlong(v_sdata[0]));
     }
 }
 
-// Kernel para extrair valor de um ponto específico
-__global__ void extract_value_kernel(double* array, int idx, double* result) {
+// Kernel para extrair múltiplos valores de pontos específicos em uma única chamada
+__global__ void extract_center_values_kernel(double* u, double* v, double* p, int center_idx, 
+                                           double* u_center, double* v_center, double* p_center) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        *result = array[idx];
+        *u_center = u[center_idx];
+        *v_center = v[center_idx];
+        *p_center = p[center_idx];
     }
-}
-
-// Kernel para calcular norma de resíduo
-__global__ void calculate_residual_norm_kernel(double* res, double* norm, int i_max, int j_max) {
-    extern __shared__ double sdata[];
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    
-    double sum = 0.0;
-    
-    // Cada thread soma vários elementos
-    if (i <= i_max) {
-        for (int j = 1; j <= j_max; j++) {
-            double val = res[i * (j_max + 2) + j];
-            sum += val * val;
-        }
-    }
-    
-    // Carregar na memória compartilhada
-    sdata[tid] = sum;
-    __syncthreads();
-    
-    // Redução dentro do bloco
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-    
-    // Thread 0 escreve o resultado parcial
-    if (tid == 0) {
-        atomicAdd(norm, sdata[0]);
-    }
-}
-
-// Kernel para calcular a norma de pressão inicial
-__global__ void calculate_pressure_norm_kernel(double* p, double* norm, int i_max, int j_max) {
-    extern __shared__ double sdata[];
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    
-    double sum = 0.0;
-    
-    // Cada thread soma vários elementos
-    if (i <= i_max) {
-        for (int j = 1; j <= j_max; j++) {
-            double val = p[i * (j_max + 2) + j];
-            sum += val * val;
-        }
-    }
-    
-    // Carregar na memória compartilhada
-    sdata[tid] = sum;
-    __syncthreads();
-    
-    // Redução dentro do bloco
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-    
-    // Thread 0 escreve o resultado parcial
-    if (tid == 0) {
-        atomicAdd(norm, sdata[0]);
-    }
-}
-
-// Implementação completa do cudaSOR usando kernels otimizados
-int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double delta_x, double delta_y, 
-            double** res, double** RHS, double omega, double eps, int max_it, double** F, double** G, double tau, double Re,
-            int problem, double f, double* t, int* n_out, double g_x, double g_y) {
-    
-    // Calcular delta_t adaptativo e parâmetros
-    int blockSize = 256;
-    int gridSize = (i_max * j_max + blockSize - 1) / blockSize;
-    
-    // Alocar memória device para u_max e v_max
-    double *device_u_max, *device_v_max;
-    CUDACHECK(cudaMalloc(&device_u_max, sizeof(double)));
-    CUDACHECK(cudaMalloc(&device_v_max, sizeof(double)));
-    
-    // Inicializar com zero
-    CUDACHECK(cudaMemset(device_u_max, 0, sizeof(double)));
-    CUDACHECK(cudaMemset(device_v_max, 0, sizeof(double)));
-    
-    // Chamar kernels com ponteiros device
-    max_mat_kernel_double<<<gridSize, blockSize>>>(device_u, i_max, j_max, device_u_max);
-    KERNEL_CHECK("max_mat_kernel_double");
-    max_mat_kernel_double<<<gridSize, blockSize>>>(device_v, i_max, j_max, device_v_max);
-    KERNEL_CHECK("max_mat_kernel_double");
-    
-    // Copiar resultados de volta para host
-    CUDACHECK(cudaMemcpy(&u_max, device_u_max, sizeof(double), cudaMemcpyDeviceToHost));
-    CUDACHECK(cudaMemcpy(&v_max, device_v_max, sizeof(double), cudaMemcpyDeviceToHost));
-    
-    // Liberar memória device temporária
-    CUDACHECK(cudaFree(device_u_max));
-    CUDACHECK(cudaFree(device_v_max));
-    
-    delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
-                         delta_x / fabs(u_max), delta_y / fabs(v_max));
-    gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
-    
-    // Configurações de grid e bloco para kernels
-    dim3 blockSize2(16, 16);
-    dim3 gridSize2((i_max + blockSize2.x) / blockSize2.x, (j_max + blockSize2.y) / blockSize2.y);
-    dim3 boundaryBlockSize(256);
-    
-    // Configurar condições de contorno usando kernels otimizados
-    if (problem == 1) {
-        // Lid-driven cavity
-        // LEFT - no-slip
-        if (num_left_indices > 0) {
-            dim3 leftGridSize((num_left_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<leftGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_left_indices, num_left_indices, LEFT, i_max, j_max);
-            KERNEL_CHECK("set_noslip_optimized_kernel (LEFT)");
-        }
-        
-        // RIGHT - no-slip
-        if (num_right_indices > 0) {
-            dim3 rightGridSize((num_right_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<rightGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_right_indices, num_right_indices, RIGHT, i_max, j_max);
-            KERNEL_CHECK("set_noslip_optimized_kernel (RIGHT)");
-        }
-        
-        // BOTTOM - no-slip
-        if (num_bottom_indices > 0) {
-            dim3 bottomGridSize((num_bottom_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<bottomGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_bottom_indices, num_bottom_indices, BOTTOM, i_max, j_max);
-            KERNEL_CHECK("set_noslip_optimized_kernel (BOTTOM)");
-        }
-        
-        // TOP - inflow
-        if (num_top_indices > 0) {
-            dim3 topGridSize((num_top_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_inflow_optimized_kernel<<<topGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_top_indices, num_top_indices, TOP, 1.0, 0.0, i_max, j_max);
-            KERNEL_CHECK("set_inflow_optimized_kernel (TOP)");
-        }
-    } else if (problem == 2) {
-        // Periodic boundary
-        // LEFT, RIGHT, BOTTOM - no-slip
-        if (num_left_indices > 0) {
-            dim3 leftGridSize((num_left_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<leftGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_left_indices, num_left_indices, LEFT, i_max, j_max);
-        }
-        if (num_right_indices > 0) {
-            dim3 rightGridSize((num_right_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<rightGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_right_indices, num_right_indices, RIGHT, i_max, j_max);
-        }
-        if (num_bottom_indices > 0) {
-            dim3 bottomGridSize((num_bottom_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_noslip_optimized_kernel<<<bottomGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_bottom_indices, num_bottom_indices, BOTTOM, i_max, j_max);
-        }
-        
-        // TOP - periodic inflow
-        if (num_top_indices > 0) {
-            dim3 topGridSize((num_top_indices + boundaryBlockSize.x - 1) / boundaryBlockSize.x);
-            set_inflow_optimized_kernel<<<topGridSize, boundaryBlockSize>>>(
-                device_u, device_v, device_top_indices, num_top_indices, TOP, sin(f * (*t)), 0.0, i_max, j_max);
-        }
-    }
-    
-    // Calcular F e G
-    FG_linear_kernel<<<gridSize2, blockSize2>>>(
-        device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, 
-        delta_t, delta_x, delta_y, gamma_factor);
-    KERNEL_CHECK("FG_linear_kernel");
-    
-    // Calcular RHS
-    RHS_kernel<<<gridSize2, blockSize2>>>(
-        device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
-    KERNEL_CHECK("RHS_kernel");
-    
-    // SOR iterations
-    double dxdx = delta_x * delta_x;
-    double dydy = delta_y * delta_y;
-    
-    // Calcular norma inicial de pressão
-    double *device_norm_p;
-    CUDACHECK(cudaMalloc(&device_norm_p, sizeof(double)));
-    CUDACHECK(cudaMemset(device_norm_p, 0, sizeof(double)));
-    
-    int norm_blockSize = 256;
-    int norm_gridSize = (i_max + norm_blockSize - 1) / norm_blockSize;
-    calculate_pressure_norm_kernel<<<norm_gridSize, norm_blockSize, norm_blockSize * sizeof(double)>>>(
-        device_p, device_norm_p, i_max, j_max);
-    KERNEL_CHECK("calculate_pressure_norm_kernel");
-    
-    double h_norm_p;
-    CUDACHECK(cudaMemcpy(&h_norm_p, device_norm_p, sizeof(double), cudaMemcpyDeviceToHost));
-    h_norm_p = sqrt(h_norm_p / (i_max * j_max));
-    
-    int it = 0;
-    while (it < max_it) {
-        // Atualizar bordas de pressão
-        update_pressure_bounds_kernel<<<(i_max + j_max + 255) / 256, 256>>>(device_p, i_max, j_max);
-        KERNEL_CHECK("update_pressure_bounds_kernel");
-        
-        // Red-Black SOR
-        RedSORKernel<<<gridSize2, blockSize2>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
-        KERNEL_CHECK("RedSORKernel");
-        
-        BlackSORKernel<<<gridSize2, blockSize2>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
-        KERNEL_CHECK("BlackSORKernel");
-        
-        // Calcular resíduo
-        CalculateResidualKernel<<<gridSize2, blockSize2>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
-        KERNEL_CHECK("CalculateResidualKernel");
-        
-        // Calcular norma do resíduo
-        double *device_norm_res;
-        CUDACHECK(cudaMalloc(&device_norm_res, sizeof(double)));
-        CUDACHECK(cudaMemset(device_norm_res, 0, sizeof(double)));
-        
-        calculate_residual_norm_kernel<<<norm_gridSize, norm_blockSize, norm_blockSize * sizeof(double)>>>(
-            device_res, device_norm_res, i_max, j_max);
-        KERNEL_CHECK("calculate_residual_norm_kernel");
-        
-        double h_norm_res;
-        CUDACHECK(cudaMemcpy(&h_norm_res, device_norm_res, sizeof(double), cudaMemcpyDeviceToHost));
-        h_norm_res = sqrt(h_norm_res / (i_max * j_max));
-        
-        CUDACHECK(cudaFree(device_norm_res));
-        
-        // Verificar convergência
-        if (h_norm_res <= eps * (h_norm_p + 0.01)) {
-            CUDACHECK(cudaFree(device_norm_p));
-            break;
-        }
-        
-        it++;
-    }
-    
-    CUDACHECK(cudaFree(device_norm_p));
-    
-    // Atualizar u e v
-    update_uv_kernel<<<gridSize2, blockSize2>>>(
-        device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
-    KERNEL_CHECK("update_uv_kernel");
-
-    // Obter valores centrais para impressão
-    int center_i = i_max / 2;
-    int center_j = j_max / 2;
-    double u_center = 0.0, v_center = 0.0, p_center = 0.0;
-    
-    // Alocar memória para valores centrais
-    double *d_u_center, *d_v_center, *d_p_center;
-    CUDACHECK(cudaMalloc(&d_u_center, sizeof(double)));
-    CUDACHECK(cudaMalloc(&d_v_center, sizeof(double)));
-    CUDACHECK(cudaMalloc(&d_p_center, sizeof(double)));
-    
-    // Extrair valores centrais
-    extract_value_kernel<<<1, 1>>>(device_u, center_i * (j_max + 2) + center_j, d_u_center);
-    extract_value_kernel<<<1, 1>>>(device_v, center_i * (j_max + 2) + center_j, d_v_center);
-    extract_value_kernel<<<1, 1>>>(device_p, center_i * (j_max + 2) + center_j, d_p_center);
-    KERNEL_CHECK("extract_value_kernel");
-    
-    // Copiar valores de volta para o host
-    CUDACHECK(cudaMemcpy(&u_center, d_u_center, sizeof(double), cudaMemcpyDeviceToHost));
-    CUDACHECK(cudaMemcpy(&v_center, d_v_center, sizeof(double), cudaMemcpyDeviceToHost));
-    CUDACHECK(cudaMemcpy(&p_center, d_p_center, sizeof(double), cudaMemcpyDeviceToHost));
-    
-    // Imprimir valores
-    printf("TIMESTEP: %d TIME: %f\n", *n_out, *t);
-    printf("U-CENTER: %f\n", u_center);
-    printf("V-CENTER: %f\n", v_center);
-    printf("P-CENTER: %f\n", p_center);
-    
-    // Liberar memória temporária
-    CUDACHECK(cudaFree(d_u_center));
-    CUDACHECK(cudaFree(d_v_center));
-    CUDACHECK(cudaFree(d_p_center));
-
-    // Atualizar tempo
-    *t += delta_t;
-    
-    // Retornar -1 se máximo de iterações foi excedido
-    if (it >= max_it) {
-        return -1;
-    }
-    
-    return 0;
 }

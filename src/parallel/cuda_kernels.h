@@ -46,6 +46,9 @@ extern "C" {
     __global__ void calculate_pressure_norm_kernel(double* p, double* norm, int i_max, int j_max);
     __global__ void set_noslip_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, int i_max, int j_max);
     __global__ void set_inflow_optimized_kernel(double* u, double* v, int* indices, int num_indices, int side, double u_fix, double v_fix, int i_max, int j_max);
+    __global__ void max_mat_combined_kernel(const double* u_mat, const double* v_mat, int i_max, int j_max, double* u_max, double* v_max);
+    __global__ void extract_center_values_kernel(double* u, double* v, double* p, int center_idx, double* u_center, double* v_center, double* p_center);
+    __global__ void boundary_conditions_combined_kernel(double* u, double* v, int i_max, int j_max, int problem, double f, double t);
 }
 #else
 // Para compilação C/C++ normal, declarar apenas os protótipos das funções host
