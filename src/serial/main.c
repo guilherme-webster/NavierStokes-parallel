@@ -82,8 +82,6 @@ int main(int argc, char* argv[])
     int n = 0;
     int n_out = 0;
 
-    clock_t start = clock();
-
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
@@ -125,8 +123,14 @@ int main(int argc, char* argv[])
         printf("RHS calculated!\n");
 
         // Execute SOR step.
+
+        clock_t start = clock();
         if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
         printf("SOR complete!\n");
+        clock_t end = clock();
+        double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+
+        fprintf(stderr, "%.6f", time_spent);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
@@ -162,12 +166,6 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
-
-    clock_t end = clock();
-    double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-
-    fprintf(stderr, "%.6f", time_spent);
-
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
     return 0;
