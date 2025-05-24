@@ -385,25 +385,24 @@ int main(int argc, char* argv[])
         calculate_RHS_kernel<<<gridDim, blockDim>>>(RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
+        clock_t start_UVA = clock();
         // Execute SOR step using UVA
-        if (SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) {
-            printf("Maximum SOR iterations exceeded!\n");
-        }
+        SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it); 
+        clock_t end_UVA = clock();
+        double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
+        fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
 
         // Update velocities using CUDA kernel
         update_velocities_kernel<<<gridDim, blockDim>>>(u, v, F, G, p, i_max, j_max, delta_t, delta_x, delta_y);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        // Print values (acessível diretamente da CPU devido ao UVA)
-        if (n % n_print == 0) {
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
-            n_out++;
-        }
+    // Print values (acessível diretamente da CPU devido ao UVA)
+        printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+        printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
+        n_out++;
 
         t += delta_t;
         n++;

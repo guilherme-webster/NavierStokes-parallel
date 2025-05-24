@@ -16,6 +16,7 @@
 #include "integration.h"
 #include "boundaries.h"
 
+
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
@@ -118,8 +119,11 @@ int main(int argc, char* argv[])
                 RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
             }
         }
-        // Execute SOR step.
+        clock_t start_UVA = clock();
         if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
+        clock_t end_UVA = clock();
+        double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
+        fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
