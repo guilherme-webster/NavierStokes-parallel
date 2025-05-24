@@ -477,11 +477,11 @@ double orchestration(int i_max, int j_max) {
 
 
 __global__ void min_and_gamma (){
-    double min = fmin(*d_Re / 2.0 / ( 1.0 / d_delta_x / d_delta_x + 1.0 / d_delta_y / d_delta_y ), d_delta_x / fabs(du_max));
-    min = fmin(min, d_delta_y / fabs(dv_max));
+    double min = fmin(*d_Re / 2.0 / ( 1.0 / *d_delta_x / *d_delta_x + 1.0 / *d_delta_y / *d_delta_y ), *d_delta_x / fabs(*du_max));
+    min = fmin(min, *d_delta_y / fabs(*dv_max));
     min = fmin(min, 3.0);
-    delta_t = *d_tau * min;
-    d_gamma = fmax(du_max * delta_t / d_delta_x, dv_max * delta_t / d_delta_y);
+    *d_delta_t = *d_tau * min;
+    d_gamma = fmax(*du_max * *d_delta_t / *d_delta_x, *dv_max * *d_delta_t / *d_delta_y);
     // debug print computed values
     printf("[min_and_gamma] du_max=%f dv_max=%f delta_t=%f d_gamma=%f\n", du_max, dv_max, delta_t, d_gamma);
 }
@@ -856,5 +856,5 @@ __global__ void extract_value_kernel(double* d_u, double* d_v, double* d_p, int 
     result[0] = d_u[idx];
     result[1] = d_v[idx];
     result[2] = d_p[idx];
-    result[3] = delta_t;
+    result[3] = *d_delta_t;
 }
