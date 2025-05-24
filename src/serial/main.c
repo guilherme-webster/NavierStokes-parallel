@@ -88,6 +88,7 @@ int main(int argc, char* argv[])
     	// Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
         double v_max = max_mat(i_max, j_max, v);
+        printf("u_max: %.6f v_max: %.6f\n", u_max, v_max);
     	delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
 
