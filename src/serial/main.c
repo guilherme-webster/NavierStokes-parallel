@@ -16,6 +16,7 @@
 #include "integration.h"
 #include "boundaries.h"
 
+#include <ctime>
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
@@ -63,7 +64,7 @@ int main(int argc, char* argv[])
     if (argc > 1) {
         param_file = argv[1];
     }
-    
+    clock_t start = clock();
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     printf("Initialized!\n");
@@ -124,11 +125,11 @@ int main(int argc, char* argv[])
 
         // Execute SOR step.
 
-        clock_t start = clock();
+        clock_t start_sor = clock();
         if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
         printf("SOR complete!\n");
-        clock_t end = clock();
-        double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
+        clock_t end_sor = clock();
+        double time_spent = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
 
         fprintf(stderr, "%.6f", time_spent);
 
@@ -166,6 +167,9 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
+    clock_t end = clock();
+    double time_spent_total = (double)(end - start) / CLOCKS_PER_SEC;
+    printf("Total time: %.6f\n", time_spent_total);
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
     return 0;

@@ -238,7 +238,7 @@ int main(int argc, char* argv[])
             fclose(fp);
         }
     }
-    
+    clock_t start = clock();
     // Initialize all parameters.
     init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
     printf("Initialized!\n");
@@ -256,7 +256,7 @@ int main(int argc, char* argv[])
     int i, j;
     int n = 0;
     int n_out = 0;
-
+    
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
@@ -303,7 +303,7 @@ int main(int argc, char* argv[])
         printf("SOR complete!\n");
         clock_t end_sor = clock();
         double time_sor = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
-        fprintf(stderr, "%.6f", time_sor);
+        fprintf(stderr, "%.6f\n", time_sor);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
@@ -329,6 +329,11 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
+
+    clock_t end = clock();
+    double time = (double)(end - start) / CLOCKS_PER_SEC;
+    fprintf(stderr, "Total time: %.6f\n", time);
+
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
