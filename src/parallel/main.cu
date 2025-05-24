@@ -275,13 +275,15 @@ int main(int argc, char* argv[])
 
 void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int total_points, double* tau, double* Re, double* g_x, double* g_y
                 , double* omega, double* epsilon, int* max_it) {
+    // Use consistent (j_max + 2) dimensions for ALL arrays
     size_t size = (i_max + 2) * (j_max + 2) * sizeof(double);
+    
     //variaveis de valor 0
     CUDA_CHECK(cudaMallocManaged((void**)&d_u, size));
-    CUDA_CHECK(cudaMallocManaged((void**)&d_v, size));
+    CUDA_CHECK(cudaMallocManaged((void**)&d_v, size));  // Fixed: now same size as u
     CUDA_CHECK(cudaMallocManaged((void**)&d_p, size));
     CUDA_CHECK(cudaMallocManaged((void**)&d_F, size));
-    CUDA_CHECK(cudaMallocManaged((void**)&d_G, size));
+    CUDA_CHECK(cudaMallocManaged((void**)&d_G, size));  // Fixed: now same size as F
     CUDA_CHECK(cudaMallocManaged((void**)&d_res, size));
     CUDA_CHECK(cudaMallocManaged((void**)&d_RHS, size));
     CUDA_CHECK(cudaMallocManaged((void**)&du_max, sizeof(double)));
@@ -302,9 +304,7 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMemset(d_res, 0, size));
     CUDA_CHECK(cudaMemset(d_RHS, 0, size));
 
-    // update device symbols for d_u and d_v so __device__ pointers are valid
-    cudaMemcpyToSymbol(d_u, &d_u, sizeof(double*));
-    cudaMemcpyToSymbol(d_v, &d_v, sizeof(double*));
+    // Remove problematic cudaMemcpyToSymbol calls - managed memory doesn't need this
 
     // variaveis copiadas do host
     CUDA_CHECK(cudaMallocManaged((void**)&d_tau, sizeof(double)));
@@ -317,20 +317,20 @@ void init_memory(int i_max, int j_max,  BoundaryPoint* h_boundary_indices, int t
     CUDA_CHECK(cudaMallocManaged((void**)&d_omega, sizeof(double)));
     CUDA_CHECK(cudaMallocManaged((void**)&d_epsilon, sizeof(double)));
     CUDA_CHECK(cudaMallocManaged((void**)&d_max_it, sizeof(int)));
-    CUDA_CHECK(cudaMallocManaged((void**)&d_norm_p, sizeof(double)));
-    CUDA_CHECK(cudaMallocManaged((void**)&d_norm_res, sizeof(double)));
 
+    // Copy values using managed memory (direct assignment)
+    *d_max_it = *max_it;
+    *d_omega = *omega;
+    *d_epsilon = *epsilon;
+    *d_i_max = i_max;
+    *d_j_max = j_max;
+    *d_tau = *tau;
+    *d_Re = *Re;
+    *d_gx = *g_x;
+    *d_gy = *g_y;
     
-    cudaMemcpy(d_max_it, max_it, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_omega, omega, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_epsilon, epsilon, sizeof(double), cudaMemcpyHostToDevice);
+    // Copy boundary indices
     cudaMemcpy(d_boundary_indices, h_boundary_indices, total_points * sizeof(BoundaryPoint), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_i_max, &i_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_j_max, &j_max, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_tau, tau, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Re, Re, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_gx, g_x, sizeof(double), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_gy, g_y, sizeof(double), cudaMemcpyHostToDevice);
 
 }
 
@@ -355,7 +355,12 @@ void free_memory_kernel() {
     cudaFree(d_max_it);
     cudaFree(d_norm_p);
     cudaFree(d_norm_res);
-
+    cudaFree(du_max);
+    cudaFree(dv_max);
+    cudaFree(d_delta_x);
+    cudaFree(d_delta_y);
+    cudaFree(d_gamma);
+    cudaFree(d_delta_t);
 }
 
 
@@ -371,8 +376,13 @@ __global__ void pick_max() {
 
 double orchestration(int i_max, int j_max) {
     
-    int threads = 256;
-    int blocks = (i_max * j_max + threads - 1) / threads;
+    // Use 2D thread blocks for proper 2D indexing
+    dim3 threads(16, 16);  // 256 threads per block
+    dim3 blocks((i_max + threads.x - 1) / threads.x, (j_max + threads.y - 1) / threads.y);
+    
+    // For 1D kernels that still need 1D configuration
+    int threads_1d = 256;
+    int blocks_1d = (i_max * j_max + threads_1d - 1) / threads_1d;
     int size = i_max * j_max;
 
     // acha o máximo da matriz u e v
@@ -381,21 +391,21 @@ double orchestration(int i_max, int j_max) {
         pick_max<<<1,1>>>(); 
 
         LOG("launch max_reduce u");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,du_max);
+        max_reduce_kernel<<<blocks_1d,threads_1d,threads_1d*sizeof(double)>>>(*d_i_max,*d_j_max,d_u,du_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce u"); LOG("max_reduce u complete");
 
         LOG("launch max_reduce v");
-        max_reduce_kernel<<<blocks,threads,threads*sizeof(double)>>>(*d_i_max,*d_j_max,d_v, dv_max);
+        max_reduce_kernel<<<blocks_1d,threads_1d,threads_1d*sizeof(double)>>>(*d_i_max,*d_j_max,d_v, dv_max);
         KERNEL_CHECK(); SYNC_CHECK("max_reduce v"); LOG("max_reduce v complete");
 
-        size /= threads;
+        size /= threads_1d;
     }
 
     LOG("launch min_and_gamma");
     min_and_gamma<<<1,1>>>(); KERNEL_CHECK(); SYNC_CHECK("min_and_gamma"); LOG("min_and_gamma complete");
 
     LOG("launch update_boundaries");
-    update_boundaries_kernel<<<blocks,threads>>>(); KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
+    update_boundaries_kernel<<<blocks_1d,threads_1d>>>(); KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
     LOG("launch calculate_F");
     calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gx,*d_delta_t,*d_delta_x,*d_delta_y,*d_gamma);
@@ -413,7 +423,7 @@ double orchestration(int i_max, int j_max) {
     cudaDeviceSynchronize();
     
     LOG("launch L2_norm for norm_p");
-    L2_norm<<<blocks, threads>>>(d_norm_p, d_p, *d_i_max, *d_j_max);
+    L2_norm<<<blocks_1d, threads_1d>>>(d_norm_p, d_p, *d_i_max, *d_j_max);
     KERNEL_CHECK(); SYNC_CHECK("L2_norm for norm_p"); LOG("L2_norm for norm_p complete");
 
     cudaDeviceSynchronize();
@@ -429,7 +439,7 @@ double orchestration(int i_max, int j_max) {
     
     while(it < max_it) {
         LOG("launch calculate_ghost");
-        calculate_ghost<<<blocks, threads>>>();
+        calculate_ghost<<<blocks_1d, threads_1d>>>();
         cudaDeviceSynchronize(); LOG("calculate_ghost complete");
 
         printf("RHS calculated!\n");
@@ -447,7 +457,7 @@ double orchestration(int i_max, int j_max) {
         cudaDeviceSynchronize(); LOG("residual_kernel complete");
 
         LOG("launch L2_norm for norm_res");
-        L2_norm<<<blocks, threads>>>(d_norm_res, d_res, *d_i_max, *d_j_max);
+        L2_norm<<<blocks_1d, threads_1d>>>(d_norm_res, d_res, *d_i_max, *d_j_max);
         cudaDeviceSynchronize(); LOG("L2_norm for norm_res complete");
 
         double norm_res;
@@ -484,8 +494,6 @@ __global__ void min_and_gamma (){
     min = fmin(min, 3.0);
     *d_delta_t = *d_tau * min;
     *d_gamma = fmax(*du_max * *d_delta_t / *d_delta_x, *dv_max * *d_delta_t / *d_delta_y);
-    // debug print computed values
-    printf("[min_and_gamma] du_max=%f dv_max=%f delta_t=%f d_gamma=%f\n", du_max, dv_max, delta_t, d_gamma);
 }
 
 
@@ -516,23 +524,19 @@ __device__ double atomicAddDouble(double* address, double val) {
 __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max_val) {
     extern __shared__ double shared_data[];
     int tid = threadIdx.x;
-    printf("blk=%d tid=%d\n", blockIdx.x, tid);
     int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     int stride = blockDim.x * gridDim.x;
 
     double max_val_local = -1e5;
-    printf("max_val_local=%f\n", max_val_local);
 
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
             max_val_local = arr[i];
-            printf("max_val_local=%f\n", max_val_local);
         }
     }
 
     shared_data[tid] = max_val_local;
-    printf("blk=%d tid=%d local_max=%f\n", blockIdx.x, tid, max_val_local);
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
@@ -543,7 +547,6 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     }
 
     if (tid==0) {
-      printf("blk=%d block_max=%f -> atomicMax\n", blockIdx.x, shared_data[0]);
       atomicMax(&max_val[0], shared_data[0]);
     }
 }
@@ -587,20 +590,20 @@ __global__ void update_boundaries_kernel() {
     // O vfix e ufix são fixos pois tratam apenas do caso 1 do simulador
     switch (point.side) {
         case 0: // TOP
-            d_v[i * (*d_j_max + 1) + j] = 0.0;
+            d_v[i * (*d_j_max + 2) + j] = 0.0;
             d_u[i * (*d_j_max + 2) + (j + 1)] = 2 * 1.0 - d_u[i * (*d_j_max + 2) + j];
             break;
         case 1: // BOTTOM
-            d_v[i * (*d_j_max + 1) + j] = 0.0;
+            d_v[i * (*d_j_max + 2) + j] = 0.0;
             d_u[i * (*d_j_max + 2) + j] = 2 * 0.0 - d_u[i * (*d_j_max + 2) + (j + 1)];
             break;
         case 2: // LEFT
             d_u[i * (*d_j_max + 2) + j] = 0.0;
-            d_v[i * (*d_j_max + 1) + j] = 2 * 0.0 - d_v[(i + 1) * (*d_j_max + 1) + j];
+            d_v[i * (*d_j_max + 2) + j] = 2 * 0.0 - d_v[(i + 1) * (*d_j_max + 2) + j];
             break;
         case 3: // RIGHT
             d_u[i * (*d_j_max + 2) + j] = 0.0;
-            d_v[i * (*d_j_max + 1) + j] = 2 * 0.0 - d_v[(i - 1) * (*d_j_max + 1) + j];
+            d_v[i * (*d_j_max + 2) + j] = 2 * 0.0 - d_v[(i - 1) * (*d_j_max + 2) + j];
             break;
     }
 }
@@ -628,11 +631,11 @@ __device__ double duv_dy(double* u, double* v, int i, int j, double delta_y, dou
     int u_idx_j_plus = i * (j_max + 2) + (j+1);
     int u_idx_j_minus = i * (j_max + 2) + (j-1);
     
-    // Índices lineares para v (com j_max + 1 colunas) 
-    int v_idx = i * (j_max + 1) + j;
-    int v_idx_i_plus = (i+1) * (j_max + 1) + j;
-    int v_idx_j_minus = i * (j_max + 1) + (j-1);
-    int v_idx_i_plus_j_minus = (i+1) * (j_max + 1) + (j-1);
+    // Índices lineares para v (com j_max + 2 colunas) 
+    int v_idx = i * (j_max + 2) + j;
+    int v_idx_i_plus = (i+1) * (j_max + 2) + j;
+    int v_idx_j_minus = i * (j_max + 2) + (j-1);
+    int v_idx_i_plus_j_minus = (i+1) * (j_max + 2) + (j-1);
 
     double stencil1 = 0.5 * (v[v_idx] + v[v_idx_i_plus]);
     double stencil2 = 0.5 * (v[v_idx_j_minus] + v[v_idx_i_plus_j_minus]);
@@ -648,9 +651,9 @@ __device__ double duv_dy(double* u, double* v, int i, int j, double delta_y, dou
 
 __device__ double dv2_dy(double* v, double* u, int i, int j, double delta_y, double gamma, int j_max) {
     // Índices lineares para v
-    int idx = i * (j_max + 1) + j;
-    int idx_j_plus = i * (j_max + 1) + (j+1);
-    int idx_j_minus = i * (j_max + 1) + (j-1);
+    int idx = i * (j_max + 2) + j;
+    int idx_j_plus = i * (j_max + 2) + (j+1);
+    int idx_j_minus = i * (j_max + 2) + (j-1);
     
     double stencil1 = 0.5 * (v[idx] + v[idx_j_plus]);
     double stencil2 = 0.5 * (v[idx_j_minus] + v[idx]);
@@ -669,9 +672,9 @@ __device__ double duv_dx(double* u, double* v, int i, int j, double delta_x, dou
     int u_idx_i_minus_j_plus = (i-1) * (j_max + 2) + (j+1);
     
     // Índices lineares para v
-    int v_idx = i * (j_max + 1) + j;
-    int v_idx_i_plus = (i+1) * (j_max + 1) + j;
-    int v_idx_i_minus = (i-1) * (j_max + 1) + j;
+    int v_idx = i * (j_max + 2) + j;
+    int v_idx_i_plus = (i+1) * (j_max + 2) + j;
+    int v_idx_i_minus = (i-1) * (j_max + 2) + j;
 
     double stencil1 = 0.5 * (u[u_idx] + u[u_idx_j_plus]);
     double stencil2 = 0.5 * (u[u_idx_i_minus] + u[u_idx_i_minus_j_plus]);
@@ -706,17 +709,17 @@ __device__ double d2u_dy2(double* u, int i, int j, double delta_y, int j_max) {
 }
 
 __device__ double d2v_dx2(double* v, int i, int j, double delta_x, int j_max) {
-    int idx = i * (j_max + 1) + j;
-    int idx_i_plus = (i+1) * (j_max + 1) + j;
-    int idx_i_minus = (i-1) * (j_max + 1) + j;
+    int idx = i * (j_max + 2) + j;
+    int idx_i_plus = (i+1) * (j_max + 2) + j;
+    int idx_i_minus = (i-1) * (j_max + 2) + j;
     
     return (v[idx_i_plus] - 2 * v[idx] + v[idx_i_minus]) / (delta_x*delta_x);
 }
 
 __device__ double d2v_dy2(double* v, int i, int j, double delta_y, int j_max) {
-    int idx = i * (j_max + 1) + j;
-    int idx_j_plus = i * (j_max + 1) + (j+1);
-    int idx_j_minus = i * (j_max + 1) + (j-1);
+    int idx = i * (j_max + 2) + j;
+    int idx_j_plus = i * (j_max + 2) + (j+1);
+    int idx_j_minus = i * (j_max + 2) + (j-1);
     
     return (v[idx_j_plus] - 2 * v[idx] + v[idx_j_minus]) / (delta_y*delta_y);
 }
@@ -737,8 +740,7 @@ __global__ void calculate_G(double * G, double* u, double* v, int i_max, int j_m
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     // u and v must be d_u and d_v when this function is called
     if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
-        // +1 ou +2
-        G[i * (j_max + 1) + j] = v[i * (j_max + 1) + j] + delta_t * ((1/Re) * (d2v_dx2(v, i, j, delta_x, j_max) + d2v_dy2(v, i, j, delta_y, j_max)) - duv_dx(u, v, i, j, delta_x, gamma, j_max) - dv2_dy(v, u, i, j, delta_y, gamma, j_max) + g_y);
+        G[i * (j_max + 2) + j] = v[i * (j_max + 2) + j] + delta_t * ((1/Re) * (d2v_dx2(v, i, j, delta_x, j_max) + d2v_dy2(v, i, j, delta_y, j_max)) - duv_dx(u, v, i, j, delta_x, gamma, j_max) - dv2_dy(v, u, i, j, delta_y, gamma, j_max) + g_y);
     }
 }
 
@@ -749,7 +751,7 @@ __global__ void calculate_RHS(double* RHS, double* F, double* G, double* u, doub
     int j = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
-        RHS[i * (j_max + 2) + j] = 1.0 / delta_t * ((F[i * (j_max + 2) + j] - F[(i-1) * (j_max + 2) + j]) / delta_x + (G[i * (j_max + 1) + j] - G[i * (j_max + 1) + (j-1)]) / delta_y);
+        RHS[i * (j_max + 2) + j] = 1.0 / delta_t * ((F[i * (j_max + 2) + j] - F[(i-1) * (j_max + 2) + j]) / delta_x + (G[i * (j_max + 2) + j] - G[i * (j_max + 2) + (j-1)]) / delta_y);
     }
 }
 
@@ -849,7 +851,7 @@ __global__ void update_velocity_kernel(double* u, double* v, double* p, int i_ma
 
     if (i > 0 && i <= i_max && j > 0 && j <= j_max) {
         if (i <= i_max - 1) u[i * (j_max + 2) + j] = d_F[i * (j_max + 2) + j] - delta_t * (p[(i+1) * (j_max + 2) + j] - p[i * (j_max + 2) + j]) / delta_x;
-        if (j <= j_max - 1) v[i * (j_max + 1) + j] = d_G[i * (j_max + 1) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
+        if (j <= j_max - 1) v[i * (j_max + 2) + j] = d_G[i * (j_max + 2) + j] - delta_t * (p[i * (j_max + 2) + (j+1)] - p[i * (j_max + 2) + j]) / delta_y;
     }
 }
 
