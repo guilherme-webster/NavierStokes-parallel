@@ -67,16 +67,13 @@ int initBoundaryIndices(int i_max, int j_max);
 
 // Definition for n_min
 // Helper function to find the minimum of up to 4 doubles
-double n_min(int n, double a, double b, double c, double d) {
+double n_min(int n, double a, double b, double c) {
     double min_val = a; // Start with a
     if (n >= 2 && b < min_val) {
         min_val = b;
     }
     if (n >= 3 && c < min_val) {
         min_val = c;
-    }
-    if (n >= 4 && d < min_val) {
-        min_val = d;
     }
     return min_val;
 }
