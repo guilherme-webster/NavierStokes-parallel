@@ -481,7 +481,7 @@ __global__ void min_and_gamma (){
     min = fmin(min, *d_delta_y / fabs(*dv_max));
     min = fmin(min, 3.0);
     *d_delta_t = *d_tau * min;
-    d_gamma = fmax(*du_max * *d_delta_t / *d_delta_x, *dv_max * *d_delta_t / *d_delta_y);
+    *d_gamma = fmax(*du_max * *d_delta_t / *d_delta_x, *dv_max * *d_delta_t / *d_delta_y);
     // debug print computed values
     printf("[min_and_gamma] du_max=%f dv_max=%f delta_t=%f d_gamma=%f\n", du_max, dv_max, delta_t, d_gamma);
 }
