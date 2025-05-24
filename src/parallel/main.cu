@@ -202,6 +202,7 @@ int main(int argc, char* argv[])
         // Calcular u_max e v_max diretamente na GPU
         double u_max = find_max_parallel(d_u, (i_max+2) * (j_max+2));
         double v_max = find_max_parallel(d_v, (i_max+2) * (j_max+2));
+        printf("u_max: %.6f, v_max: %.6f\n", u_max, v_max);
         
         // Calcular delta_t e gamma na CPU
         delta_t = tau * n_min(3, Re / 2.0 / (1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y), 
@@ -229,13 +230,13 @@ int main(int argc, char* argv[])
         if (n % n_print == 0) {
             // Extrair apenas os valores necessários para impressão
             double u_center, v_center, p_center;
-            extract_key_values(d_u, d_v, d_p, i_max, j_max, &u_center, &v_center, &p_center);
-            
-            // Imprimir os dados
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-            printf("U-CENTER: %.6f\n", u_center);
-            printf("V-CENTER: %.6f\n", v_center);
-            printf("P-CENTER: %.6f\n", p_center);
+            //extract_key_values(d_u, d_v, d_p, i_max, j_max, &u_center, &v_center, &p_center);
+            //
+            //// Imprimir os dados
+            //printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+            //printf("U-CENTER: %.6f\n", u_center);
+            //printf("V-CENTER: %.6f\n", v_center);
+            //printf("P-CENTER: %.6f\n", p_center);
             
             n_out++;
         }
