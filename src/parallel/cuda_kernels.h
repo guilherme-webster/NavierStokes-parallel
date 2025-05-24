@@ -19,6 +19,7 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
 // Função utilitária para mínimo
 double n_min(int n, double a, double b, double c, double d);
 
+int initBoundaryIndices(int i_max, int j_max);
 // KERNELS CUDA (definidos em cuda_kernels.cu)
 #ifdef __CUDACC__
 // Template precisa estar fora do extern "C"

@@ -62,6 +62,9 @@ bool check_mem_bounds(const void* ptr, size_t size, const char* ptr_name, const 
 #define KERNEL_CHECK(kernel_name) check_kernel_launch(kernel_name, __FILE__, __LINE__)
 #define CHECK_POINTER(ptr, size, name) check_mem_bounds((ptr), (size), (name), __FILE__, __LINE__)
 
+// Declaration of initBoundaryIndices (must be added before initCudaArrays)
+int initBoundaryIndices(int i_max, int j_max);
+
 // Definition for n_min
 // Helper function to find the minimum of up to 4 doubles
 double n_min(int n, double a, double b, double c, double d) {
@@ -844,17 +847,20 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
             int problem, double f, double* t, int* n_out, double g_x, double g_y) {
     
     // Calcular delta_t adaptativo e parâmetros
-    max_mat_kernel_double(device_u, i_max, j_max, &u_max);
-    max_mat_kernel_double(device_v, i_max, j_max, &v_max);
+    int blockSize = 256;
+    int gridSize = (i_max * j_max + blockSize - 1) / blockSize;
+    max_mat_kernel_double<<<gridSize, blockSize>>>(device_u, i_max, j_max, &u_max);
+    KERNEL_CHECK("max_mat_kernel_double");
+    max_mat_kernel_double<<<gridSize, blockSize>>>(device_v, i_max, j_max, &v_max);
+    KERNEL_CHECK("max_mat_kernel_double");
     
-    // Calcular delta_t usando n_min
     delta_t = tau * n_min(3, Re / 2.0 / (1.0 / (delta_x * delta_x) + 1.0 / (delta_y * delta_y)), 
                           delta_x / fabs(u_max), delta_y / fabs(v_max));
     gamma_factor = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
     
     // Configurações de grid e bloco para kernels
-    dim3 blockSize(16, 16);
-    dim3 gridSize((i_max + blockSize.x) / blockSize.x, (j_max + blockSize.y) / blockSize.y);
+    dim3 blockSize2(16, 16);
+    dim3 gridSize2((i_max + blockSize2.x) / blockSize2.x, (j_max + blockSize2.y) / blockSize2.y);
     dim3 boundaryBlockSize(256);
     
     // Configurar condições de contorno usando kernels otimizados
@@ -919,13 +925,13 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
     }
     
     // Calcular F e G
-    FG_linear_kernel<<<gridSize, blockSize>>>(
+    FG_linear_kernel<<<gridSize2, blockSize2>>>(
         device_u, device_v, device_F, device_G, i_max, j_max, Re, g_x, g_y, 
         delta_t, delta_x, delta_y, gamma_factor);
     KERNEL_CHECK("FG_linear_kernel");
     
     // Calcular RHS
-    RHS_kernel<<<gridSize, blockSize>>>(
+    RHS_kernel<<<gridSize2, blockSize2>>>(
         device_F, device_G, device_RHS, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK("RHS_kernel");
     
@@ -955,14 +961,14 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
         KERNEL_CHECK("update_pressure_bounds_kernel");
         
         // Red-Black SOR
-        RedSORKernel<<<gridSize, blockSize>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
+        RedSORKernel<<<gridSize2, blockSize2>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         KERNEL_CHECK("RedSORKernel");
         
-        BlackSORKernel<<<gridSize, blockSize>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
+        BlackSORKernel<<<gridSize2, blockSize2>>>(device_p, device_RHS, i_max, j_max, omega, dxdx, dydy);
         KERNEL_CHECK("BlackSORKernel");
         
         // Calcular resíduo
-        CalculateResidualKernel<<<gridSize, blockSize>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
+        CalculateResidualKernel<<<gridSize2, blockSize2>>>(device_p, device_res, device_RHS, i_max, j_max, dxdx, dydy);
         KERNEL_CHECK("CalculateResidualKernel");
         
         // Calcular norma do resíduo
@@ -992,7 +998,7 @@ int cudaSOR(double** p, double** u, double** v, int i_max, int j_max, double del
     CUDACHECK(cudaFree(device_norm_p));
     
     // Atualizar u e v
-    update_uv_kernel<<<gridSize, blockSize>>>(
+    update_uv_kernel<<<gridSize2, blockSize2>>>(
         device_u, device_v, device_F, device_G, device_p, i_max, j_max, delta_t, delta_x, delta_y);
     KERNEL_CHECK("update_uv_kernel");
     
