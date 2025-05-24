@@ -34,7 +34,8 @@ double *d_u, *d_v, *d_p;
 
 // Simulation parameters - managed memory
 double *d_delta_x, *d_delta_y, *d_gamma;
-double du_max, dv_max;
+double *du_max, *dv_max;
+double *d_delta_t;
 int *d_i_max, *d_j_max;
 double *d_tau, *d_Re;
 BoundaryPoint *d_boundary_indices;
@@ -394,16 +395,16 @@ double orchestration(int i_max, int j_max) {
     update_boundaries_kernel<<<blocks,threads>>>(); KERNEL_CHECK(); SYNC_CHECK("update_boundaries"); LOG("update_boundaries complete");
 
     LOG("launch calculate_F");
-    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gx,delta_t,d_delta_x,d_delta_y,d_gamma);
+    calculate_F<<<blocks,threads>>>(d_F,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gx,*d_delta_t,*d_delta_x,*d_delta_y,*d_gamma);
     KERNEL_CHECK(); SYNC_CHECK("calculate_F"); LOG("calculate_F complete");
 
     LOG("launch calculate_G");
-    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gy,delta_t,d_delta_x,d_delta_y,d_gamma);
+    calculate_G<<<blocks,threads>>>(d_G,d_u,d_v,*d_i_max,*d_j_max,*d_Re,*d_gy,*d_delta_t,*d_delta_x,*d_delta_y,*d_gamma);
     KERNEL_CHECK(); SYNC_CHECK("calculate_G"); LOG("calculate_G complete");
 
     // now we calculate rhs
     LOG("launch calculate_RHS");
-    calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, *d_i_max, *d_j_max, delta_t, d_delta_x, d_delta_y);
+    calculate_RHS<<<blocks, threads>>>(d_RHS, d_F, d_G, d_u, d_v, *d_i_max, *d_j_max, *d_delta_t, *d_delta_x, *d_delta_y);
     KERNEL_CHECK(); SYNC_CHECK("calculate_RHS"); LOG("calculate_RHS complete");
 
     cudaDeviceSynchronize();
@@ -431,15 +432,15 @@ double orchestration(int i_max, int j_max) {
         printf("RHS calculated!\n");
         // Now execute de SOR black and red
         LOG("launch red_kernel");
-        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
+        red_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, *d_delta_x, *d_delta_y, *d_omega);
         cudaDeviceSynchronize(); LOG("red_kernel complete");
 
         LOG("launch black_kernel");
-        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, d_delta_x, d_delta_y, *d_omega);
+        black_kernel<<<blocks, threads>>>(d_p, d_RHS, d_u, d_v, *d_i_max, *d_j_max, *d_delta_x, *d_delta_y, *d_omega);
         cudaDeviceSynchronize(); LOG("black_kernel complete");
 
         LOG("launch residual_kernel");
-        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, *d_i_max, *d_j_max, d_delta_x, d_delta_y);
+        residual_kernel<<<blocks, threads>>>(d_res, d_p, d_RHS, *d_i_max, *d_j_max, *d_delta_x, *d_delta_y);
         cudaDeviceSynchronize(); LOG("residual_kernel complete");
 
         LOG("launch L2_norm for norm_res");
@@ -456,7 +457,7 @@ double orchestration(int i_max, int j_max) {
     }
 
     printf("SOR complete!\n");
-    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, *d_i_max, *d_j_max, delta_t, d_delta_x, d_delta_y);
+    update_velocity_kernel<<<blocks, threads>>>(d_u, d_v, d_p, *d_i_max, *d_j_max, *d_delta_t, *d_delta_x, *d_delta_y);
     cudaDeviceSynchronize();
     printf("Velocities updated!\n");
     // update the velocities
