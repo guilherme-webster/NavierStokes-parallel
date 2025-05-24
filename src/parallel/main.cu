@@ -493,7 +493,6 @@ __global__ void max_reduce_kernel(int i_max, int j_max, double* arr, double* max
     for (int i = global_idx; i < i_max * j_max; i += stride) {
         if (arr[i] > max_val_local) {
             max_val_local = arr[i];
-            printf("max_val_local=%f\n", max_val_local);
         }
     }
 
@@ -826,5 +825,6 @@ __global__ void extract_value_kernel(double* u, double* v, double* p, double* de
     result[1] = v[idx];
     result[2] = p[idx];
     result[3] = *delta_t_device;
-    printf("delta_t: %.6f\n", result[3]);
+    // Print delta_t value for debugging
+    
 }
