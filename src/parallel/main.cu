@@ -476,11 +476,6 @@ __global__ void min_and_gamma(double* delta_t, double* gamma, double* du_max, do
     
     *delta_t = tau * min;
     
-    // ✅ Garantir delta_t mínimo
-    if (*delta_t < 1e-6) {
-        *delta_t = 1e-6;
-    }
-    
     *gamma = fmax(du_safe * (*delta_t) / delta_x, dv_safe * (*delta_t) / delta_y);
     
     // Debug prints
