@@ -19,6 +19,288 @@
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
+#include <cuda_runtime.h>
+#include <vector>
+#include <numeric>
+#include <cmath>
+
+// Macro para verificar erros CUDA
+#define CHECK_CUDA_ERROR(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s:%d - %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
+
+// Função para alocar memória usando UVA (Unified Virtual Addressing)
+int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max) {
+    int rows = i_max + 2;
+    int cols = j_max + 2;
+    
+    // Alocar arrays de ponteiros para linhas
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)u, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)v, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)p, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)res, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)RHS, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)F, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)G, rows * sizeof(double*)));
+    
+    // Alocar memória contígua para cada matriz
+    double *u_data, *v_data, *p_data, *res_data, *RHS_data, *F_data, *G_data;
+    
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&u_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&v_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&p_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&res_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&RHS_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&F_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&G_data, rows * cols * sizeof(double)));
+    
+    // Configurar ponteiros de linha para apontar para a memória contígua
+    for (int i = 0; i < rows; i++) {
+        (*u)[i] = &u_data[i * cols];
+        (*v)[i] = &v_data[i * cols];
+        (*p)[i] = &p_data[i * cols];
+        (*res)[i] = &res_data[i * cols];
+        (*RHS)[i] = &RHS_data[i * cols];
+        (*F)[i] = &F_data[i * cols];
+        (*G)[i] = &G_data[i * cols];
+    }
+    
+    // Inicializar com zeros
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            (*u)[i][j] = 0.0;
+            (*v)[i][j] = 0.0;
+            (*p)[i][j] = 0.0;
+            (*res)[i][j] = 0.0;
+            (*RHS)[i][j] = 0.0;
+            (*F)[i][j] = 0.0;
+            (*G)[i][j] = 0.0;
+        }
+    }
+    
+    return 0;
+}
+
+// Função para liberar memória UVA
+void free_unified_memory(double **u, double **v, double **p, double **res, double **RHS, double **F, double **G) {
+    if (u) {
+        cudaFree(u[0]); // Libera dados contíguos
+        cudaFree(u);    // Libera array de ponteiros
+    }
+    if (v) {
+        cudaFree(v[0]);
+        cudaFree(v);
+    }
+    if (p) {
+        cudaFree(p[0]);
+        cudaFree(p);
+    }
+    if (res) {
+        cudaFree(res[0]);
+        cudaFree(res);
+    }
+    if (RHS) {
+        cudaFree(RHS[0]);
+        cudaFree(RHS);
+    }
+    if (F) {
+        cudaFree(F[0]);
+        cudaFree(F);
+    }
+    if (G) {
+        cudaFree(G[0]);
+        cudaFree(G);
+    }
+}
+
+// Kernels CUDA que podem acessar diretamente as matrizes 2D
+__global__ void calculate_RHS_kernel(double **RHS, double **F, double **G, 
+                                   int i_max, int j_max, double delta_t, 
+                                   double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max) {
+        RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + 
+                                     (G[i][j] - G[i][j-1])/delta_y);
+    }
+}
+
+__global__ void update_velocities_kernel(double **u, double **v, double **F, double **G, double **p,
+                                        int i_max, int j_max, double delta_t, 
+                                        double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max) {
+        if (i <= i_max - 1) {
+            u[i][j] = F[i][j] - delta_t * (p[i+1][j] - p[i][j]) / delta_x;
+        }
+        if (j <= j_max - 1) {
+            v[i][j] = G[i][j] - delta_t * (p[i][j+1] - p[i][j]) / delta_y;
+        }
+    }
+}
+
+// SOR kernel usando UVA - versão Red-Black simplificada
+__global__ void sor_red_kernel_uva(double **p, double **RHS, 
+                                  int i_max, int j_max, double delta_x, double delta_y, 
+                                  double omega) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
+        double dx2 = delta_x * delta_x;
+        double dy2 = delta_y * delta_y;
+        double coeff = 2.0 * (1.0/dx2 + 1.0/dy2);
+        
+        double p_old = p[i][j];
+        p[i][j] = (1.0 - omega) * p_old + 
+                  omega / coeff * 
+                  ((p[i+1][j] + p[i-1][j]) / dx2 +
+                   (p[i][j+1] + p[i][j-1]) / dy2 -
+                   RHS[i][j]);
+    }
+}
+
+__global__ void sor_black_kernel_uva(double **p, double **RHS, 
+                                    int i_max, int j_max, double delta_x, double delta_y, 
+                                    double omega) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
+        double dx2 = delta_x * delta_x;
+        double dy2 = delta_y * delta_y;
+        double coeff = 2.0 * (1.0/dx2 + 1.0/dy2);
+        
+        double p_old = p[i][j];
+        p[i][j] = (1.0 - omega) * p_old + 
+                  omega / coeff * 
+                  ((p[i+1][j] + p[i-1][j]) / dx2 +
+                   (p[i][j+1] + p[i][j-1]) / dy2 -
+                   RHS[i][j]);
+    }
+}
+
+// Kernel para atualizar condições de contorno
+__global__ void update_boundaries_kernel_uva(double **p, int i_max, int j_max) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (i > i_max + 1 || j > j_max + 1) return;
+
+    // Atualizar células fantasmas horizontais (colunas 0 e i_max+1)
+    if (j >= 1 && j <= j_max) {
+        if (i == 0) { // Fronteira esquerda
+            p[0][j] = p[1][j];
+        }
+        else if (i == i_max + 1) { // Fronteira direita
+            p[i_max + 1][j] = p[i_max][j];
+        }
+    }
+    
+    // Atualizar células fantasmas verticais (linhas 0 e j_max+1)
+    if (i >= 1 && i <= i_max) {
+        if (j == 0) { // Fronteira inferior
+            p[i][0] = p[i][1];
+        }
+        else if (j == j_max + 1) { // Fronteira superior
+            p[i][j_max + 1] = p[i][j_max];
+        }
+    }
+}
+
+
+// Kernel para calcular o resíduo da equação de Poisson: L(p) - RHS
+__global__ void calculate_poisson_residual_kernel(double **p, double **RHS, double **res,
+                                                int i_max, int j_max, double delta_x, double delta_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+
+    if (i <= i_max && j <= j_max) {
+        double dx2 = delta_x * delta_x;
+        double dy2 = delta_y * delta_y;
+
+        res[i][j] = (p[i+1][j] - 2.0 * p[i][j] + p[i-1][j]) / dx2 +
+                    (p[i][j+1] - 2.0 * p[i][j] + p[i][j-1]) / dy2 -
+                    RHS[i][j];
+    }
+}
+
+// Função auxiliar no host para calcular a norma L2 de uma matriz UVA
+double calculate_L2_norm_host_uva(double **matrix, int i_max, int j_max) {
+    double norm_sq_sum = 0.0;
+    if (i_max == 0 || j_max == 0) return 0.0;
+
+    for (int r = 1; r <= i_max; r++) {
+        for (int c = 1; c <= j_max; c++) {
+            norm_sq_sum += matrix[r][c] * matrix[r][c];
+        }
+    }
+    return sqrt(norm_sq_sum / (i_max * j_max));
+}
+
+// Função SOR usando UVA com critério de convergência similar ao serial
+int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
+           double **res, double **RHS, double omega, double epsilon, int max_it) {
+    
+    dim3 blockDim(16, 16);
+    dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
+                 (j_max + blockDim.y - 1) / blockDim.y);
+    
+    dim3 boundaryBlockDim(16, 16);
+    dim3 boundaryGridDim(((i_max + 2) + boundaryBlockDim.x - 1) / boundaryBlockDim.x, 
+                         ((j_max + 2) + boundaryBlockDim.y - 1) / boundaryBlockDim.y);
+    
+    // Calcular norma inicial de p
+    double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
+    
+    for (int it = 0; it < max_it; it++) {
+        // Prefetch para GPU se necessário (opcional)
+        cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
+        cudaMemPrefetchAsync(RHS[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
+        
+        // 1. Update boundary conditions uma vez por iteração
+        update_boundaries_kernel_uva<<<boundaryGridDim, boundaryBlockDim>>>(p, i_max, j_max);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // 2. Red points
+        sor_red_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
+                                                 delta_x, delta_y, omega);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // 3. Black points
+        sor_black_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
+                                                   delta_x, delta_y, omega);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // 4. Calcular resíduo usando kernel CUDA (mais eficiente)
+        if ((it + 1) % 100 == 0 || it == 0) {
+            // Calcular resíduo de Poisson L(p) - RHS na GPU
+            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+            
+            // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
+            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
+            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
+
+                return it + 1;
+            }
+        }
+    }
+    
+      return -1;
+}
 
 /**
  * @brief Main function.
@@ -29,11 +311,10 @@
 
 int main(int argc, char* argv[])
 {
-    // Grid pointers.
-	double** u;     // velocity x-component
-	double** v;     // velocity y-component
-	double** p;     // pressure
-
+    // Grid pointers - agora serão alocados com UVA
+    double** u;     // velocity x-component
+    double** v;     // velocity y-component
+    double** p;     // pressure
     double** F;     // F term
     double** G;     // G term
     double** res;   // SOR residuum
@@ -77,16 +358,14 @@ int main(int argc, char* argv[])
     // }
     
     // Initialize all parameters.
-	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
-    printf("Initialized!\n");
-
+    init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
+ 
     // Set step size in space.
     delta_x = a / i_max;
     delta_y = b / j_max;
 
-    // Allocate memory for grids.
-    allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated.\n");
+    // Allocate memory using UVA instead of regular allocation
+    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
 
     // Time loop.
     double t = 0;
@@ -99,13 +378,13 @@ int main(int argc, char* argv[])
     while (t < T) {
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
-    	// Adaptive stepsize and weight factor for Donor-Cell
+        // Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
         double v_max = max_mat(i_max, j_max, v);
-    	delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
+        delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
 
-        // Set boundary conditions.
+        // Set boundary conditions (permanecem na CPU)
         if (problem == 1) {
             set_noslip(i_max, j_max, u, v, LEFT);
             set_noslip(i_max, j_max, u, v, RIGHT);
@@ -116,72 +395,48 @@ int main(int argc, char* argv[])
             set_noslip(i_max, j_max, u, v, RIGHT);
             set_noslip(i_max, j_max, u, v, BOTTOM);
             set_inflow(i_max, j_max, u, v, TOP, sin(f*t), 0.0);           
-        } else {
-            printf("Unknown probem type (see parameters.txt).\n");
-            exit(EXIT_FAILURE);
         }
 
-        printf("Conditions set!\n");
 
-        // Calculate F and G.
+        // Calculate F and G (pode ser mantido na CPU ou implementado em CUDA)
         FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
 
-        printf("F, G calculated!\n");
-
-        // RHS of Poisson equation.
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
-            }
+        // RHS of Poisson equation - now using CUDA kernel
+        dim3 blockDim(16, 16);
+        dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
+                     (j_max + blockDim.y - 1) / blockDim.y);
+        
+        calculate_RHS_kernel<<<gridDim, blockDim>>>(RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        //clock_t start_sor = clock();
+        // Execute SOR step using UVA
+        if (SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) {
         }
-        printf("RHS calculated!\n");
+        //clock_t end_sor = clock();
+        //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
+        //fprintf(stderr, "SOR time: %.6f\n", sor_time);
 
-        // Execute SOR step.
-        if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
-        printf("SOR complete!\n");
+        // Update velocities using CUDA kernel
+        update_velocities_kernel<<<gridDim, blockDim>>>(u, v, F, G, p, i_max, j_max, delta_t, delta_x, delta_y);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        // Update velocities.
-        for (i = 1; i <= i_max; i++ ) {
-            for (j = 1; j <= j_max; j++) {
-                if (i <= i_max - 1) u[i][j] = F[i][j] - delta_t * dp_dx(p, i, j, delta_x);
-                if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
-            }
-        }
-        printf("Velocities updatet!\n");
-
-        // Print to file every ..th step.
-        // if (n % n_print == 0) {
-        //     char out_prefix[12];
-        //     sprintf(out_prefix, "out/%d", n_out);
-        //     output(i_max, j_max, u, v, p, t, a, b, out_prefix);
-        //     n_out++;
-        // }
-
-        if (n % n_print == 0) {
-            // Instead of outputting to files, print the data to stdout
+        // Print values (acessível diretamente da CPU devido ao UVA)
             printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-
-            // Print some key values from u, v, p matrices
-            // For example, print central values and some boundary values
             printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
 
-            // Add more key values as needed
-            n_out++;
-        }
 
         t += delta_t;
         n++;
     }
 
     clock_t end = clock();
-
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-
     fprintf(stderr, "%.6f", time_spent);
 
-    // Free grid memory.
-    free_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max);
+    // Free unified memory
+    free_unified_memory(u, v, p, res, RHS, F, G);
     return 0;
 }
