@@ -292,9 +292,7 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
             
             // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
             double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-            printf("Iteration %d: L2 norm of residual = %.6f\n", it + 1, current_L2_res_norm);
-            printf("Iteration %d: L2 norm of p = %.6f\n", it + 1, norm_p_initial);
-            if (current_L2_res_norm <= epsilon * (norm_p_initial + 0.01)) {
+            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
 
                 return it + 1;
             }
@@ -411,13 +409,13 @@ int main(int argc, char* argv[])
         calculate_RHS_kernel<<<gridDim, blockDim>>>(RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        clock_t start_sor = clock();
+        //clock_t start_sor = clock();
         // Execute SOR step using UVA
         if (SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) {
         }
-        clock_t end_sor = clock();
-        double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
-        fprintf(stderr, "SOR time: %.6f\n", sor_time);
+        //clock_t end_sor = clock();
+        //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
+        //fprintf(stderr, "SOR time: %.6f\n", sor_time);
 
         // Update velocities using CUDA kernel
         update_velocities_kernel<<<gridDim, blockDim>>>(u, v, F, G, p, i_max, j_max, delta_t, delta_x, delta_y);
@@ -425,13 +423,11 @@ int main(int argc, char* argv[])
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         // Print values (acessível diretamente da CPU devido ao UVA)
-        if (n % n_print == 0) {
             printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
             printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
             printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
             n_out++;
-        }
 
         t += delta_t;
         n++;

@@ -119,11 +119,11 @@ int main(int argc, char* argv[])
                 RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
             }
         }
-        clock_t start_UVA = clock();
+        //clock_t start_UVA = clock();
         if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
-        clock_t end_UVA = clock();
-        double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
-        fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
+        //clock_t end_UVA = clock();
+        //double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
+        //fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
@@ -140,8 +140,6 @@ int main(int argc, char* argv[])
         //     n_out++;
         // }
 
-        if (n % n_print == 0) {
-            // Instead of outputting to files, print the data to stdout
             printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
 
             // Printing some key values from u, v, p matrices
@@ -150,9 +148,6 @@ int main(int argc, char* argv[])
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
             printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
 
-            // Add more key values as needed
-            n_out++;
-        }
 
         t += delta_t;
         n++;
