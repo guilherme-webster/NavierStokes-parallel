@@ -426,8 +426,7 @@ int main(int argc, char* argv[])
             printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
             printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
-            n_out++;
+
 
         t += delta_t;
         n++;
