@@ -11,5 +11,5 @@
 1.0		    # Security factor tau.
 1.7         # Relaxation factor for SOR. (1.0 is Gauß-Seidel) (higher relax factor)
 0.00001      # Relative tolerance for SOR. (tigher)
-1000000         # Maximum iterations for SOR.
+200000         # Maximum iterations for SOR.
 1           # Print results to file every nth step.
