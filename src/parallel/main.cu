@@ -401,7 +401,7 @@ int main(int argc, char* argv[])
     // (soma dos comprimentos das bordas, subtraindo os 4 cantos contados duas vezes, mas cada célula de canto é um ponto)
     // Ou mais simples: (i_max+2)*2 para bordas superior/inferior + j_max*2 para bordas laterais (excluindo cantos já contados)
     // = 2*i_max + 4 + 2*j_max = 2 * (i_max + j_max + 2)
-    int num_actual_border_points = 2 * (i_max + j_max + 2);
+    int num_actual_border_points = 2 * (i_max + j_max + 4);
 
     // Passar num_actual_border_points para allocate_unified_memory
     allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders, num_actual_border_points);
