@@ -43,7 +43,8 @@ typedef struct{
     } while(0)
 
 // Função para alocar memória usando UVA (Unified Virtual Addressing)
-int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint **borders) {
+// Adicionar num_border_points como parâmetro
+int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint **borders, int num_border_points) {
     int rows = i_max + 2;
     int cols = j_max + 2;
     
@@ -55,7 +56,8 @@ int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)RHS, rows * sizeof(double*)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)F, rows * sizeof(double*)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)G, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&borders, 2 * (i_max + j_max + 4) * sizeof(BoundaryPoint)));
+    // Alocar o número exato de pontos de borda usando num_border_points
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)borders, num_border_points * sizeof(BoundaryPoint)));
 
     double *u_data, *v_data, *p_data, *res_data, *RHS_data, *F_data, *G_data;
     
@@ -130,14 +132,14 @@ void free_unified_memory(double **u, double **v, double **p, double **res, doubl
 }
 
 
-void precalculate_borders(int i_max, int j_max, BoundaryPoint *borders) {
+void precalculate_borders(int i_max, int j_max, BoundaryPoint *borders_ptr) { // Nome do parâmetro alterado para clareza local
     int index = 0;
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             if (i == 0 || i == i_max + 1 || j == 0 || j == j_max + 1) {
-                borders[index].i = i;
-                borders[index].j = j;
-                borders[index].position = (i == 0) ? LEFT : (i == i_max + 1) ? RIGHT : (j == 0) ? BOTTOM : TOP;
+                borders_ptr[index].i = i;
+                borders_ptr[index].j = j;
+                borders_ptr[index].position = (i == 0) ? LEFT : (i == i_max + 1) ? RIGHT : (j == 0) ? BOTTOM : TOP;
                 index++;
             }
         }
@@ -274,30 +276,35 @@ double calculate_L2_norm_host_uva(double **matrix, int i_max, int j_max) {
 
 // Função SOR usando UVA com critério de convergência similar ao serial
 // Função SOR atualizada para usar o kernel otimizado de bordas
+// Adicionar border_count como parâmetro
 int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
            double **res, double **RHS, double omega, double epsilon, int max_it,
-           BoundaryPoint *borders) {
+           BoundaryPoint *borders, int border_count) { // Adicionado parâmetro border_count
     
     dim3 blockDim(16, 16);
     dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
                  (j_max + blockDim.y - 1) / blockDim.y);
     
     // Configuração para o novo kernel de bordas (1D)
-    int border_count = 2 * (i_max + j_max + 4); // Total de pontos de borda
-    dim3 boundaryBlockDim(256); // Usar 256 threads por bloco para kernel 1D
-    dim3 boundaryGridDim((border_count + boundaryBlockDim.x - 1) / boundaryBlockDim.x);
+    // border_count agora é um parâmetro, remover a linha abaixo:
+    // int border_count = 2 * (i_max + j_max + 4); 
+    dim3 boundaryBlockDim(256); 
+    dim3 boundaryGridDim((border_count + boundaryBlockDim.x - 1) / boundaryBlockDim.x); // Usar o parâmetro border_count
     
     // Calcular norma inicial de p
     double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
     
     for (int it = 0; it < max_it; it++) {
         // Prefetch para GPU se necessário (opcional)
-        cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
-        cudaMemPrefetchAsync(RHS[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
-        cudaMemPrefetchAsync(borders, border_count * sizeof(BoundaryPoint), 0);
+        // É uma boa prática especificar o deviceId para o qual fazer o prefetch.
+        int currentDevice;
+        cudaGetDevice(&currentDevice); // Obter o ID do dispositivo atual
+        cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), currentDevice, 0); // stream 0
+        cudaMemPrefetchAsync(RHS[0], (i_max + 2) * (j_max + 2) * sizeof(double), currentDevice, 0);
+        cudaMemPrefetchAsync(borders, border_count * sizeof(BoundaryPoint), currentDevice, 0); // Usar o parâmetro border_count
         
         // 1. Atualizar bordas usando kernel otimizado com pontos pré-calculados
-        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
+        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count); // Usar o parâmetro border_count
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
@@ -388,7 +395,19 @@ int main(int argc, char* argv[])
     // Set step size in space.
     delta_x = a / i_max;
     delta_y = b / j_max;
-    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders);
+
+    // Calcular o número exato de pontos de borda
+    // A fórmula é 2 * ( (i_max+2) + (j_max+2) - 2 ) = 2 * (i_max + j_max + 2)
+    // (soma dos comprimentos das bordas, subtraindo os 4 cantos contados duas vezes, mas cada célula de canto é um ponto)
+    // Ou mais simples: (i_max+2)*2 para bordas superior/inferior + j_max*2 para bordas laterais (excluindo cantos já contados)
+    // = 2*i_max + 4 + 2*j_max = 2 * (i_max + j_max + 2)
+    int num_actual_border_points = 2 * (i_max + j_max + 2);
+
+    // Passar num_actual_border_points para allocate_unified_memory
+    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders, num_actual_border_points);
+    
+    // precalculate_borders preenche o array 'borders'.
+    // Ele não precisa mais do count como parâmetro se a memória já está dimensionada corretamente.
     precalculate_borders(i_max, j_max, borders);
     
     // Allocate memory using UVA instead of regular allocation
@@ -437,7 +456,8 @@ int main(int argc, char* argv[])
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         //clock_t start_sor = clock();
         // Execute SOR step using UVA
-        SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders);
+        // Passar num_actual_border_points para SOR_UVA
+        SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
         //clock_t end_sor = clock();
         //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
         //fprintf(stderr, "SOR time: %.6f\n", sor_time);
