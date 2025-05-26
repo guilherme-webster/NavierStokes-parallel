@@ -340,6 +340,102 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
     return -1;
 }
 
+// Device versions of differential functions
+__device__ double du2_dx_device(double** u, double** v, int i, int j, double delta_x, double gamma) {
+    double stencil1 = 0.5 * (u[i][j] + u[i+1][j]);
+    double stencil2 = 0.5 * (u[i-1][j] + u[i][j]);
+
+    double stencil3 = fabs(stencil1) * 0.5 * (u[i][j] - u[i+1][j]);
+    double stencil4 = fabs(stencil2) * 0.5 * (u[i-1][j] - u[i][j]);
+
+    return (1.0/delta_x) * (stencil1*stencil1 - stencil2*stencil2) + (gamma / delta_x) * (stencil3 - stencil4);
+}
+
+__device__ double duv_dy_device(double** u, double** v, int i, int j, double delta_y, double gamma) {
+    double stencil1 = 0.5 * (v[i][j] + v[i+1][j]);
+    double stencil2 = 0.5 * (v[i][j-1] + v[i+1][j-1]);
+
+    double stencil3 = stencil1 * 0.5 * (u[i][j] + u[i][j+1]);
+    double stencil4 = stencil2 * 0.5 * (u[i][j-1] + u[i][j]);
+
+    double stencil5 = fabs(stencil1) * 0.5 * (u[i][j] - u[i][j+1]);
+    double stencil6 = fabs(stencil2) * 0.5 * (u[i][j-1] - u[i][j]);
+
+    return (1.0/delta_y) * (stencil3 - stencil4) + (gamma / delta_y) * (stencil5 - stencil6);
+}
+
+__device__ double dv2_dy_device(double** u, double** v, int i, int j, double delta_y, double gamma) {
+    double stencil1 = 0.5 * (v[i][j] + v[i][j+1]);
+    double stencil2 = 0.5 * (v[i][j-1] + v[i][j]);
+
+    double stencil3 = fabs(stencil1) * 0.5 * (v[i][j] - v[i][j+1]);
+    double stencil4 = fabs(stencil2) * 0.5 * (v[i][j-1] - v[i][j]);
+
+    return (1.0/delta_y) * (stencil1*stencil1 - stencil2*stencil2) + (gamma / delta_y) * (stencil3 - stencil4);
+}
+
+__device__ double duv_dx_device(double** u, double** v, int i, int j, double delta_x, double gamma) {
+    double stencil1 = 0.5 * (u[i][j] + u[i][j+1]);
+    double stencil2 = 0.5 * (u[i-1][j] + u[i-1][j+1]);
+
+    double stencil3 = stencil1 * 0.5 * (v[i][j] + v[i+1][j]);
+    double stencil4 = stencil2 * 0.5 * (v[i-1][j] + v[i][j]);
+
+    double stencil5 = fabs(stencil1) * 0.5 * (v[i][j] - v[i+1][j]);
+    double stencil6 = fabs(stencil2) * 0.5 * (v[i-1][j] - v[i][j]);
+
+    return (1.0/delta_x) * (stencil3 - stencil4) + (gamma / delta_x) * (stencil5 - stencil6);
+}
+
+// Central differences for second derivatives
+__device__ double d2u_dx2_device(double** u, int i, int j, double delta_x) {
+    return (u[i+1][j] - 2.0 * u[i][j] + u[i-1][j]) / (delta_x * delta_x);
+}
+
+__device__ double d2u_dy2_device(double** u, int i, int j, double delta_y) {
+    return (u[i][j+1] - 2.0 * u[i][j] + u[i][j-1]) / (delta_y * delta_y);
+}
+
+__device__ double d2v_dx2_device(double** v, int i, int j, double delta_x) {
+    return (v[i+1][j] - 2.0 * v[i][j] + v[i-1][j]) / (delta_x * delta_x);
+}
+
+__device__ double d2v_dy2_device(double** v, int i, int j, double delta_y) {
+    return (v[i][j+1] - 2.0 * v[i][j] + v[i][j-1]) / (delta_y * delta_y);
+}
+
+__global__ void calculate_F_kernel(double **F, double **u, double **v, int i_max, int j_max, 
+                                  double Re, double g_x, double delta_t, double delta_x, 
+                                  double delta_y, double gamma) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max-1 && j <= j_max) {  // F bounds: i from 1 to i_max-1
+        F[i][j] = u[i][j] + delta_t * (
+            (1.0/Re) * (d2u_dx2_device(u, i, j, delta_x) + d2u_dy2_device(u, i, j, delta_y)) 
+            - du2_dx_device(u, v, i, j, delta_x, gamma) 
+            - duv_dy_device(u, v, i, j, delta_y, gamma) 
+            + g_x
+        );
+    }
+}
+
+__global__ void calculate_G_kernel(double **G, double **u, double **v, int i_max, int j_max, 
+                                  double Re, double g_y, double delta_t, double delta_x, 
+                                  double delta_y, double gamma) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max-1) {  // G bounds: j from 1 to j_max-1
+        G[i][j] = v[i][j] + delta_t * (
+            (1.0/Re) * (d2v_dx2_device(v, i, j, delta_x) + d2v_dy2_device(v, i, j, delta_y)) 
+            - duv_dx_device(u, v, i, j, delta_x, gamma) 
+            - dv2_dy_device(u, v, i, j, delta_y, gamma) 
+            + g_y
+        );
+    }
+}
+
 /**
  * @brief Main function.
  * 
@@ -447,15 +543,19 @@ int main(int argc, char* argv[])
             set_inflow(i_max, j_max, u, v, TOP, sin(f*t), 0.0);           
         }
 
-
-        // Calculate F and G (pode ser mantido na CPU ou implementado em CUDA)
-        FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
-
-        // RHS of Poisson equation - now using CUDA kernel
         dim3 blockDim(16, 16);
         dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
                      (j_max + blockDim.y - 1) / blockDim.y);
-        
+
+        // Calculate F and G (pode ser mantido na CPU ou implementado em CUDA)
+        calculate_F_kernel<<<gridDim, blockDim>>>(F, u, v, i_max, j_max, Re, g_x, delta_t, delta_x, delta_y, gamma);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+
+        calculate_G_kernel<<<gridDim, blockDim>>>(G, u, v, i_max, j_max, Re, g_y, delta_t, delta_x, delta_y, gamma);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+        // RHS of Poisson equation - now using CUDA kernel
         calculate_RHS_kernel<<<gridDim, blockDim>>>(RHS, F, G, i_max, j_max, delta_t, delta_x, delta_y);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
