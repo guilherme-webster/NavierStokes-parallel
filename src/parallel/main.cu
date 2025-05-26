@@ -14,7 +14,6 @@
 #include "memory.h"
 #include "io.h"
 #include "integration.h"
-#include "boundaries.h"
 
 #include <time.h>
 #include <math.h>
@@ -23,6 +22,21 @@
 #include <vector>
 #include <numeric>
 #include <cmath>
+
+enum {
+    TOP = 0,
+    BOTTOM = 1,
+    LEFT = 2,
+    RIGHT = 3
+};
+
+
+typedef struct{
+    int i;
+    int j;
+    int position;
+} BoundaryPoint;
+
 
 // Macro para verificar erros CUDA
 #define CHECK_CUDA_ERROR(call) \
@@ -35,7 +49,7 @@
     } while(0)
 
 // Função para alocar memória usando UVA (Unified Virtual Addressing)
-int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max) {
+int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint *borders) {
     int rows = i_max + 2;
     int cols = j_max + 2;
     
@@ -47,8 +61,8 @@ int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)RHS, rows * sizeof(double*)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)F, rows * sizeof(double*)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)G, rows * sizeof(double*)));
-    
-    // Alocar memória contígua para cada matriz
+    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&borders, 2 * (i_max + j_max + 4) * sizeof(BoundaryPoint)));
+
     double *u_data, *v_data, *p_data, *res_data, *RHS_data, *F_data, *G_data;
     
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)&u_data, rows * cols * sizeof(double)));
@@ -58,7 +72,6 @@ int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)&RHS_data, rows * cols * sizeof(double)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)&F_data, rows * cols * sizeof(double)));
     CHECK_CUDA_ERROR(cudaMallocManaged((void**)&G_data, rows * cols * sizeof(double)));
-    
     // Configurar ponteiros de linha para apontar para a memória contígua
     for (int i = 0; i < rows; i++) {
         (*u)[i] = &u_data[i * cols];
@@ -87,7 +100,8 @@ int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res
 }
 
 // Função para liberar memória UVA
-void free_unified_memory(double **u, double **v, double **p, double **res, double **RHS, double **F, double **G) {
+void free_unified_memory(double **u, double **v, double **p, double **res, double **RHS, double **F, double **G, 
+                         BoundaryPoint *borders) {
     if (u) {
         cudaFree(u[0]); // Libera dados contíguos
         cudaFree(u);    // Libera array de ponteiros
@@ -116,7 +130,26 @@ void free_unified_memory(double **u, double **v, double **p, double **res, doubl
         cudaFree(G[0]);
         cudaFree(G);
     }
+    if (borders) {
+        cudaFree(borders);
+    }
 }
+
+
+void precalculate_borders(int i_max, int j_max, BoundaryPoint *borders) {
+    int index = 0;
+    for (int i = 0; i <= i_max + 1; i++) {
+        for (int j = 0; j <= j_max + 1; j++) {
+            if (i == 0 || i == i_max + 1 || j == 0 || j == j_max + 1) {
+                borders[index].i = i;
+                borders[index].j = j;
+                borders[index].position = (i == 0) ? LEFT : (i == i_max + 1) ? RIGHT : (j == 0) ? BOTTOM : TOP;
+                index++;
+            }
+        }
+    }
+}
+
 
 // Kernels CUDA que podem acessar diretamente as matrizes 2D
 __global__ void calculate_RHS_kernel(double **RHS, double **F, double **G, 
@@ -188,30 +221,29 @@ __global__ void sor_black_kernel_uva(double **p, double **RHS,
     }
 }
 
-// Kernel para atualizar condições de contorno
-__global__ void update_boundaries_kernel_uva(double **p, int i_max, int j_max) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (i > i_max + 1 || j > j_max + 1) return;
-
-    // Atualizar células fantasmas horizontais (colunas 0 e i_max+1)
-    if (j >= 1 && j <= j_max) {
-        if (i == 0) { // Fronteira esquerda
-            p[0][j] = p[1][j];
-        }
-        else if (i == i_max + 1) { // Fronteira direita
-            p[i_max + 1][j] = p[i_max][j];
-        }
-    }
+// Kernel otimizado para atualizar bordas usando pontos pré-calculados
+__global__ void update_boundaries_with_precalc_kernel(double **p, BoundaryPoint *borders, int border_count) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Atualizar células fantasmas verticais (linhas 0 e j_max+1)
-    if (i >= 1 && i <= i_max) {
-        if (j == 0) { // Fronteira inferior
-            p[i][0] = p[i][1];
-        }
-        else if (j == j_max + 1) { // Fronteira superior
-            p[i][j_max + 1] = p[i][j_max];
+    if (idx < border_count) {
+        int i = borders[idx].i;
+        int j = borders[idx].j;
+        int position = borders[idx].position;
+        
+        // Aplicar condição de Neumann apropriada baseada na posição
+        switch (position) {
+            case LEFT:
+                p[i][j] = p[i+1][j];  // Copia do vizinho à direita
+                break;
+            case RIGHT:
+                p[i][j] = p[i-1][j];  // Copia do vizinho à esquerda
+                break;
+            case BOTTOM:
+                p[i][j] = p[i][j+1];  // Copia do vizinho acima
+                break;
+            case TOP:
+                p[i][j] = p[i][j-1];  // Copia do vizinho abaixo
+                break;
         }
     }
 }
@@ -247,16 +279,19 @@ double calculate_L2_norm_host_uva(double **matrix, int i_max, int j_max) {
 }
 
 // Função SOR usando UVA com critério de convergência similar ao serial
+// Função SOR atualizada para usar o kernel otimizado de bordas
 int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
-           double **res, double **RHS, double omega, double epsilon, int max_it) {
+           double **res, double **RHS, double omega, double epsilon, int max_it,
+           BoundaryPoint *borders) {
     
     dim3 blockDim(16, 16);
     dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
                  (j_max + blockDim.y - 1) / blockDim.y);
     
-    dim3 boundaryBlockDim(16, 16);
-    dim3 boundaryGridDim(((i_max + 2) + boundaryBlockDim.x - 1) / boundaryBlockDim.x, 
-                         ((j_max + 2) + boundaryBlockDim.y - 1) / boundaryBlockDim.y);
+    // Configuração para o novo kernel de bordas (1D)
+    int border_count = 2 * (i_max + j_max + 4); // Total de pontos de borda
+    dim3 boundaryBlockDim(256); // Usar 256 threads por bloco para kernel 1D
+    dim3 boundaryGridDim((border_count + boundaryBlockDim.x - 1) / boundaryBlockDim.x);
     
     // Calcular norma inicial de p
     double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
@@ -265,41 +300,38 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
         // Prefetch para GPU se necessário (opcional)
         cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
         cudaMemPrefetchAsync(RHS[0], (i_max + 2) * (j_max + 2) * sizeof(double), 0);
+        cudaMemPrefetchAsync(borders, border_count * sizeof(BoundaryPoint), 0);
         
-        // 1. Update boundary conditions uma vez por iteração
-        update_boundaries_kernel_uva<<<boundaryGridDim, boundaryBlockDim>>>(p, i_max, j_max);
+        // 1. Atualizar bordas usando kernel otimizado com pontos pré-calculados
+        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // 2. Red points
+        // 2. Red points (sem alteração)
         sor_red_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
                                                  delta_x, delta_y, omega);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // 3. Black points
+        // 3. Black points (sem alteração)
         sor_black_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
                                                    delta_x, delta_y, omega);
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // 4. Calcular resíduo usando kernel CUDA (mais eficiente)
-        if ((it + 1) % 100 == 0 || it == 0) {
-            // Calcular resíduo de Poisson L(p) - RHS na GPU
-            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
-            CHECK_CUDA_ERROR(cudaGetLastError());
-            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-            
-            // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
-            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
-
-                return it + 1;
-            }
+        // 4. Calcular resíduo (sem alteração)
+        calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
+        CHECK_CUDA_ERROR(cudaGetLastError());
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Calcular norma L2 do resíduo
+        double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
+        if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
+            return it + 1;
         }
     }
     
-      return -1;
+    return -1;
 }
 
 /**
@@ -319,6 +351,9 @@ int main(int argc, char* argv[])
     double** G;     // G term
     double** res;   // SOR residuum
     double** RHS;   // RHS of poisson equation
+    BoundaryPoint* borders; // Array to store border points
+    // Allocate memory for borders
+    borders = (BoundaryPoint*)malloc(2 * (i_max + j_max + 4) * sizeof(BoundaryPoint));
 
     // Simulation parameters.
     int i_max, j_max;                   // number of grid points in each direction
@@ -363,9 +398,10 @@ int main(int argc, char* argv[])
     // Set step size in space.
     delta_x = a / i_max;
     delta_y = b / j_max;
-
+    precalculate_borders(i_max, j_max, borders);
+    
     // Allocate memory using UVA instead of regular allocation
-    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
+    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, borders);
 
     // Time loop.
     double t = 0;
@@ -411,8 +447,7 @@ int main(int argc, char* argv[])
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         //clock_t start_sor = clock();
         // Execute SOR step using UVA
-        if (SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) {
-        }
+        SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders);
         //clock_t end_sor = clock();
         //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
         //fprintf(stderr, "SOR time: %.6f\n", sor_time);
@@ -440,3 +475,4 @@ int main(int argc, char* argv[])
     free_unified_memory(u, v, p, res, RHS, F, G);
     return 0;
 }
+
