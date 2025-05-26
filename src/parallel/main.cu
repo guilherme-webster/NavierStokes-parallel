@@ -14,6 +14,7 @@
 #include "memory.h"
 #include "io.h"
 #include "integration.h"
+#include "boundaries.h"
 
 #include <time.h>
 #include <math.h>
@@ -22,13 +23,6 @@
 #include <vector>
 #include <numeric>
 #include <cmath>
-
-enum {
-    TOP = 0,
-    BOTTOM = 1,
-    LEFT = 2,
-    RIGHT = 3
-};
 
 
 typedef struct{
@@ -49,7 +43,7 @@ typedef struct{
     } while(0)
 
 // Função para alocar memória usando UVA (Unified Virtual Addressing)
-int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint *borders) {
+int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint **borders) {
     int rows = i_max + 2;
     int cols = j_max + 2;
     
@@ -352,9 +346,6 @@ int main(int argc, char* argv[])
     double** res;   // SOR residuum
     double** RHS;   // RHS of poisson equation
     BoundaryPoint* borders; // Array to store border points
-    // Allocate memory for borders
-    borders = (BoundaryPoint*)malloc(2 * (i_max + j_max + 4) * sizeof(BoundaryPoint));
-
     // Simulation parameters.
     int i_max, j_max;                   // number of grid points in each direction
     double a, b;                        // sizes of the grid
@@ -394,14 +385,13 @@ int main(int argc, char* argv[])
     
     // Initialize all parameters.
     init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
- 
     // Set step size in space.
     delta_x = a / i_max;
     delta_y = b / j_max;
+    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders);
     precalculate_borders(i_max, j_max, borders);
     
     // Allocate memory using UVA instead of regular allocation
-    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, borders);
 
     // Time loop.
     double t = 0;
@@ -472,7 +462,7 @@ int main(int argc, char* argv[])
     fprintf(stderr, "%.6f", time_spent);
 
     // Free unified memory
-    free_unified_memory(u, v, p, res, RHS, F, G);
+    free_unified_memory(u, v, p, res, RHS, F, G, borders);
     return 0;
 }
 
