@@ -321,14 +321,19 @@ int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // 4. Calcular resíduo (sem alteração)
-        calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
-        CHECK_CUDA_ERROR(cudaGetLastError());
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
-        // Calcular norma L2 do resíduo
-        double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-        if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
-            return it + 1;
+        // 4. Calcular resíduo usando kernel CUDA (mais eficiente)
+        if ((it + 1) % 100 == 0 || it == 0) {
+            // Calcular resíduo de Poisson L(p) - RHS na GPU
+            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+            
+            // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
+            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
+            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
+
+                return it + 1;
+            }
         }
     }
     
