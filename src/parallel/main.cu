@@ -274,72 +274,6 @@ double calculate_L2_norm_host_uva(double **matrix, int i_max, int j_max) {
     return sqrt(norm_sq_sum / (i_max * j_max));
 }
 
-// Função SOR usando UVA com critério de convergência similar ao serial
-// Função SOR atualizada para usar o kernel otimizado de bordas
-// Adicionar border_count como parâmetro
-int SOR_UVA(double **p, int i_max, int j_max, double delta_x, double delta_y,
-           double **res, double **RHS, double omega, double epsilon, int max_it,
-           BoundaryPoint *borders, int border_count) { // Adicionado parâmetro border_count
-    
-    dim3 blockDim(16, 16);
-    dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
-                 (j_max + blockDim.y - 1) / blockDim.y);
-    
-    // Configuração para o novo kernel de bordas (1D)
-    // border_count agora é um parâmetro, remover a linha abaixo:
-    // int border_count = 2 * (i_max + j_max + 4); 
-    dim3 boundaryBlockDim(256); 
-    dim3 boundaryGridDim((border_count + boundaryBlockDim.x - 1) / boundaryBlockDim.x); // Usar o parâmetro border_count
-    
-    // Calcular norma inicial de p
-    double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
-    
-    for (int it = 0; it < max_it; it++) {
-        // Prefetch para GPU se necessário (opcional)
-        // É uma boa prática especificar o deviceId para o qual fazer o prefetch.
-        int currentDevice;
-        cudaGetDevice(&currentDevice); // Obter o ID do dispositivo atual
-        cudaMemPrefetchAsync(p[0], (i_max + 2) * (j_max + 2) * sizeof(double), currentDevice, 0); // stream 0
-        cudaMemPrefetchAsync(RHS[0], (i_max + 2) * (j_max + 2) * sizeof(double), currentDevice, 0);
-        cudaMemPrefetchAsync(borders, border_count * sizeof(BoundaryPoint), currentDevice, 0); // Usar o parâmetro border_count
-        
-        // 1. Atualizar bordas usando kernel otimizado com pontos pré-calculados
-        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count); // Usar o parâmetro border_count
-        CHECK_CUDA_ERROR(cudaGetLastError());
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
-        // 2. Red points (sem alteração)
-        sor_red_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
-                                                 delta_x, delta_y, omega);
-        CHECK_CUDA_ERROR(cudaGetLastError());
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
-        // 3. Black points (sem alteração)
-        sor_black_kernel_uva<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, 
-                                                   delta_x, delta_y, omega);
-        CHECK_CUDA_ERROR(cudaGetLastError());
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
-        // 4. Calcular resíduo (sem alteração)
-        // 4. Calcular resíduo usando kernel CUDA (mais eficiente)
-        if ((it + 1) % 100 == 0 || it == 0) {
-            // Calcular resíduo de Poisson L(p) - RHS na GPU
-            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
-            CHECK_CUDA_ERROR(cudaGetLastError());
-            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-            
-            // Calcular norma L2 do resíduo (ainda no host, mas apenas dos resultados)
-            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
-
-                return it + 1;
-            }
-        }
-    }
-    
-    return -1;
-}
-
 // Device versions of differential functions
 __device__ double du2_dx_device(double** u, double** v, int i, int j, double delta_x, double gamma) {
     double stencil1 = 0.5 * (u[i][j] + u[i+1][j]);
@@ -560,6 +494,96 @@ __global__ void sor_shared_memory_kernel(double **p, double **RHS,
         }
 }
 
+// Após o kernel sor_shared_memory_kernel
+
+__global__ void calculate_residual_and_norm_kernel(double **p, double **RHS, 
+                                                 int i_max, int j_max, 
+                                                 double delta_x, double delta_y,
+                                                 double *block_norms) {
+    const int BLOCK_SIZE = 16;
+    
+    // Compartilhar valores do resíduo para blocos - usar para redução local
+    __shared__ double res_shared[BLOCK_SIZE][BLOCK_SIZE+1]; // +1 para evitar conflitos de bancos
+    
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    
+    // Índices globais
+    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
+    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    
+    double dx2 = delta_x * delta_x;
+    double dy2 = delta_y * delta_y;
+    double res_squared = 0.0;
+    
+    // Calcular resíduo para cada ponto e armazenar em memória compartilhada
+    if (i <= i_max && j <= j_max) {
+        double residual = (p[i+1][j] - 2.0 * p[i][j] + p[i-1][j]) / dx2 +
+                          (p[i][j+1] - 2.0 * p[i][j] + p[i][j-1]) / dy2 -
+                          RHS[i][j];
+        
+        // Armazenar o quadrado do resíduo para posterior redução
+        res_squared = residual * residual;
+        res_shared[tx][ty] = res_squared;
+    } else {
+        res_shared[tx][ty] = 0.0;
+    }
+    
+    __syncthreads();
+    
+    // Redução paralela dentro do bloco - somando todos os valores da norma ao quadrado
+    // Redução em x
+    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+        if (tx < stride) {
+            res_shared[tx][ty] += res_shared[tx + stride][ty];
+        }
+        __syncthreads();
+    }
+    
+    // Redução em y - apenas threads com tx==0 participam
+    if (tx == 0) {
+        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+            if (ty < stride) {
+                res_shared[0][ty] += res_shared[0][ty + stride];
+            }
+            __syncthreads();
+        }
+        
+        // Thread (0,0) salva o resultado final do bloco
+        if (ty == 0) {
+            block_norms[blockIdx.y * gridDim.x + blockIdx.x] = res_shared[0][0];
+        }
+    }
+}
+
+// Kernel para redução final de normas de blocos para um único valor
+__global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, double *final_norm) {
+    __shared__ double shared_data[256];
+    
+    int tid = threadIdx.x;
+    
+    // Carregar dados para memória compartilhada
+    double sum = 0.0;
+    for (int i = tid; i < num_blocks; i += blockDim.x) {
+        sum += block_norms[i];
+    }
+    shared_data[tid] = sum;
+    
+    __syncthreads();
+    
+    // Redução paralela
+    for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_data[tid] += shared_data[tid + stride];
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado final
+    if (tid == 0) {
+        *final_norm = sqrt(shared_data[0] / (i_max * j_max)); // Finaliza o cálculo da norma L2
+    }
+}
 int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x, double delta_y,
                                double **res, double **RHS, double omega, double epsilon, int max_it,
                                BoundaryPoint *borders, int border_count) {
@@ -572,38 +596,59 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
     dim3 boundaryBlockDim(256); 
     dim3 boundaryGridDim((border_count + 255) / 256);
     
+    // Número total de blocos para o cálculo da norma
+    int total_blocks = gridDim.x * gridDim.y;
+    
+    // Alocação de memória para normas de blocos e norma final
+    double *d_block_norms, *d_final_norm;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
+    
     double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
+    double current_L2_res_norm;
     
     for (int it = 0; it < max_it; it++) {
-        // Update boundaries
+        // Atualizar bordas
         update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // Red points with shared memory
+        // Pontos vermelhos com memória compartilhada
         sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 0);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // Update boundaries again
+        // Atualizar bordas novamente
         update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // Black points with shared memory  
+        // Pontos pretos com memória compartilhada
         sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 1);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // Convergence check (same as before)
-        if ((it + 1) % 100 == 0 || it == 0) {
-            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
-            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-            
-            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
-            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
-                return it + 1;
-            }
+        // Verificação de convergência usando o novo método otimizado
+        calculate_residual_and_norm_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, d_block_norms);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Redução final das normas de blocos em um único valor
+        reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Transferir apenas o valor final da norma para o host
+        CHECK_CUDA_ERROR(cudaMemcpy(&current_L2_res_norm, d_final_norm, sizeof(double), cudaMemcpyDeviceToHost));
+        
+        // Verificar convergência
+        if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
+            // Liberar memória e retornar
+            cudaFree(d_block_norms);
+            cudaFree(d_final_norm);
+            return it + 1;
         }
     }
     
-    return -1;
+    // Liberar memória
+    cudaFree(d_block_norms);
+    cudaFree(d_final_norm);
+    
+    return -1; // Não convergiu
 }
 
 /**
