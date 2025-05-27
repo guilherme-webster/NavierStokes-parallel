@@ -436,6 +436,176 @@ __global__ void calculate_G_kernel(double **G, double **u, double **v, int i_max
     }
 }
 
+__global__ void sor_shared_memory_kernel(double **p, double **RHS, 
+                                        int i_max, int j_max, double delta_x, double delta_y, 
+                                        double omega, int color) {
+    const int BLOCK_SIZE = 16; // Assuming BLOCK_SIZE is 16 as used elsewhere
+    const int SHARED_MEM_DIM_SIZE = BLOCK_SIZE + 2; // e.g., 18 for BLOCK_SIZE 16
+    
+    // p_shared needs to hold a (BLOCK_SIZE+2) x (BLOCK_SIZE+2) tile
+    // RHS_shared only needs the BLOCK_SIZE x BLOCK_SIZE interior part
+    __shared__ double p_shared[SHARED_MEM_DIM_SIZE][SHARED_MEM_DIM_SIZE + 1]; // +1 for padding against bank conflicts
+    __shared__ double RHS_shared[BLOCK_SIZE][BLOCK_SIZE]; // Only interior RHS values are needed by the stencil
+
+    int tx = threadIdx.x; // 0 to BLOCK_SIZE-1
+    int ty = threadIdx.y; // 0 to BLOCK_SIZE-1
+
+    // Global indices for the current thread's primary responsibility (center of its 3x3 stencil in shared mem)
+    int current_i = blockIdx.x * BLOCK_SIZE + tx + 1; // 1 to i_max
+    int current_j = blockIdx.y * BLOCK_SIZE + ty + 1; // 1 to j_max
+
+    // --- Stage 1: Load data into shared memory ---
+
+    // Each thread loads its corresponding p[current_i][current_j] into the center of its shared memory view
+    // p_shared[tx+1][ty+1] corresponds to p[current_i][current_j]
+    if (current_i >= 1 && current_i <= i_max && current_j >= 1 && current_j <= j_max) {
+        p_shared[tx + 1][ty + 1] = p[current_i][current_j];
+        RHS_shared[tx][ty] = RHS[current_i][current_j]; // RHS_shared is indexed 0..BLOCK_SIZE-1
+    }
+
+    // Load halo regions into p_shared
+    // Global indices for p array are 0 to i_max+1 and 0 to j_max+1
+
+    // Left halo: p_shared[0][ty+1]
+    if (tx == 0) {
+        int gi = blockIdx.x * BLOCK_SIZE; // Global i for the halo element p[gi][gj]
+        int gj = blockIdx.y * BLOCK_SIZE + ty + 1;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 1 && gj <= j_max) { // Check gj bounds carefully
+            p_shared[0][ty + 1] = p[gi][gj];
+        }
+    }
+    // Right halo: p_shared[BLOCK_SIZE+1][ty+1]
+    if (tx == BLOCK_SIZE - 1) {
+        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
+        int gj = blockIdx.y * BLOCK_SIZE + ty + 1;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 1 && gj <= j_max) {
+            p_shared[BLOCK_SIZE + 1][ty + 1] = p[gi][gj];
+        }
+    }
+    // Top halo: p_shared[tx+1][0]
+    if (ty == 0) {
+        int gi = blockIdx.x * BLOCK_SIZE + tx + 1;
+        int gj = blockIdx.y * BLOCK_SIZE;
+        if (gi >= 1 && gi <= i_max && gj >= 0 && gj <= j_max + 1) { // Check gi bounds carefully
+             p_shared[tx + 1][0] = p[gi][gj];
+        }
+    }
+    // Bottom halo: p_shared[tx+1][BLOCK_SIZE+1]
+    if (ty == BLOCK_SIZE - 1) {
+        int gi = blockIdx.x * BLOCK_SIZE + tx + 1;
+        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+        if (gi >= 1 && gi <= i_max && gj >= 0 && gj <= j_max + 1) {
+            p_shared[tx + 1][BLOCK_SIZE + 1] = p[gi][gj];
+        }
+    }
+
+    // Corner halos for p_shared
+    // Top-Left: p_shared[0][0]
+    if (tx == 0 && ty == 0) {
+        int gi = blockIdx.x * BLOCK_SIZE;
+        int gj = blockIdx.y * BLOCK_SIZE;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
+            p_shared[0][0] = p[gi][gj];
+        }
+    }
+    // Top-Right: p_shared[BLOCK_SIZE+1][0]
+    if (tx == BLOCK_SIZE - 1 && ty == 0) {
+        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
+        int gj = blockIdx.y * BLOCK_SIZE;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
+            p_shared[BLOCK_SIZE + 1][0] = p[gi][gj];
+        }
+    }
+    // Bottom-Left: p_shared[0][BLOCK_SIZE+1]
+    if (tx == 0 && ty == BLOCK_SIZE - 1) {
+        int gi = blockIdx.x * BLOCK_SIZE;
+        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
+            p_shared[0][BLOCK_SIZE + 1] = p[gi][gj];
+        }
+    }
+    // Bottom-Right: p_shared[BLOCK_SIZE+1][BLOCK_SIZE+1]
+    if (tx == BLOCK_SIZE - 1 && ty == BLOCK_SIZE - 1) {
+        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
+        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+        if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
+            p_shared[BLOCK_SIZE + 1][BLOCK_SIZE + 1] = p[gi][gj];
+        }
+    }
+
+    __syncthreads();
+
+    // --- Stage 2: Perform SOR update using shared memory ---
+    // Computation is for p[current_i][current_j]
+    if (current_i >= 1 && current_i <= i_max && current_j >= 1 && current_j <= j_max && (current_i + current_j) % 2 == color) {
+        double dx2 = delta_x * delta_x;
+        double dy2 = delta_y * delta_y;
+        double coeff = 2.0 * (1.0/dx2 + 1.0/dy2);
+        
+        // Access p_shared using indices relative to the current thread's (tx,ty)
+        // Center: p_shared[tx+1][ty+1]
+        // Left:   p_shared[tx  ][ty+1]
+        // Right:  p_shared[tx+2][ty+1]
+        // Top:    p_shared[tx+1][ty  ]
+        // Bottom: p_shared[tx+1][ty+2]
+        double p_old = p_shared[tx + 1][ty + 1];
+        double p_new = (1.0 - omega) * p_old + 
+                        omega / coeff * 
+                        ((p_shared[tx + 2][ty + 1] + p_shared[tx][ty + 1]) / dx2 +
+                        (p_shared[tx + 1][ty + 2] + p_shared[tx + 1][ty]) / dy2 -
+                        RHS_shared[tx][ty]); // Use the loaded interior RHS_shared
+
+            // we are writing to the global mem, may affect performance
+            p[current_i][current_j] = p_new;
+        }
+}
+
+int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x, double delta_y,
+                               double **res, double **RHS, double omega, double epsilon, int max_it,
+                               BoundaryPoint *borders, int border_count) {
+    
+    const int BLOCK_SIZE = 16;
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    
+    dim3 boundaryBlockDim(256); 
+    dim3 boundaryGridDim((border_count + 255) / 256);
+    
+    double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
+    
+    for (int it = 0; it < max_it; it++) {
+        // Update boundaries
+        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Red points with shared memory
+        sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 0);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Update boundaries again
+        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Black points with shared memory  
+        sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 1);
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        
+        // Convergence check (same as before)
+        if ((it + 1) % 100 == 0 || it == 0) {
+            calculate_poisson_residual_kernel<<<gridDim, blockDim>>>(p, RHS, res, i_max, j_max, delta_x, delta_y);
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+            
+            double current_L2_res_norm = calculate_L2_norm_host_uva(res, i_max, j_max);
+            if (current_L2_res_norm <= epsilon * (norm_p_initial + 1.5)) {
+                return it + 1;
+            }
+        }
+    }
+    
+    return -1;
+}
+
 /**
  * @brief Main function.
  * 
@@ -502,7 +672,7 @@ int main(int argc, char* argv[])
     // (soma dos comprimentos das bordas, subtraindo os 4 cantos contados duas vezes, mas cada célula de canto é um ponto)
     // Ou mais simples: (i_max+2)*2 para bordas superior/inferior + j_max*2 para bordas laterais (excluindo cantos já contados)
     // = 2*i_max + 4 + 2*j_max = 2 * (i_max + j_max + 2)
-    int num_actual_border_points = 2 * (i_max + j_max + 4);
+    int num_actual_border_points = 2 * (i_max + j_max + 2);
 
     // Passar num_actual_border_points para allocate_unified_memory
     allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders, num_actual_border_points);
@@ -562,7 +732,9 @@ int main(int argc, char* argv[])
         //clock_t start_sor = clock();
         // Execute SOR step using UVA
         // Passar num_actual_border_points para SOR_UVA
-        SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        //SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        SOR_UVA_with_shared_memory(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        CHECK_CUDA_ERROR(cudaGetLastError());
         //clock_t end_sor = clock();
         //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
         //fprintf(stderr, "SOR time: %.6f\n", sor_time);
