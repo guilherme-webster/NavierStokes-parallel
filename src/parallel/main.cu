@@ -42,108 +42,176 @@ typedef struct{
         } \
     } while(0)
 
-// Função para alocar memória usando UVA (Unified Virtual Addressing)
-// Adicionar num_border_points como parâmetro
-int allocate_unified_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, int i_max, int j_max, BoundaryPoint **borders, int num_border_points) {
+// Replace the existing allocate_unified_memory function with this device memory version
+int allocate_device_memory(double ***u, double ***v, double ***p, double ***res, double ***RHS, double ***F, double ***G, 
+                          int i_max, int j_max, BoundaryPoint **borders, int num_border_points) {
     int rows = i_max + 2;
     int cols = j_max + 2;
     
-    // Alocar arrays de ponteiros para linhas
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)u, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)v, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)p, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)res, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)RHS, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)F, rows * sizeof(double*)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)G, rows * sizeof(double*)));
-    // Alocar o número exato de pontos de borda usando num_border_points
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)borders, num_border_points * sizeof(BoundaryPoint)));
-
-    double *u_data, *v_data, *p_data, *res_data, *RHS_data, *F_data, *G_data;
+    // Allocate host-side array pointers
+    *u = (double**)malloc(rows * sizeof(double*));
+    *v = (double**)malloc(rows * sizeof(double*));
+    *p = (double**)malloc(rows * sizeof(double*));
+    *res = (double**)malloc(rows * sizeof(double*));
+    *RHS = (double**)malloc(rows * sizeof(double*));
+    *F = (double**)malloc(rows * sizeof(double*));
+    *G = (double**)malloc(rows * sizeof(double*));
     
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&u_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&v_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&p_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&res_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&RHS_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&F_data, rows * cols * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMallocManaged((void**)&G_data, rows * cols * sizeof(double)));
-    // Configurar ponteiros de linha para apontar para a memória contígua
+    // Allocate device-side array pointers
+    double **d_u, **d_v, **d_p, **d_res, **d_RHS, **d_F, **d_G;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_u, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_v, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_p, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_res, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_RHS, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_F, rows * sizeof(double*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_G, rows * sizeof(double*)));
+    
+    // Allocate device memory for borders
+    CHECK_CUDA_ERROR(cudaMalloc((void**)borders, num_border_points * sizeof(BoundaryPoint)));
+    
+    // Allocate device memory for data
+    double *d_u_data, *d_v_data, *d_p_data, *d_res_data, *d_RHS_data, *d_F_data, *d_G_data;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_u_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_v_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_p_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_res_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_RHS_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_F_data, rows * cols * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_G_data, rows * cols * sizeof(double)));
+    
+    // Temporary host arrays for initialization
+    double *h_u_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_v_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_p_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_res_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_RHS_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_F_data = (double*)calloc(rows * cols, sizeof(double));
+    double *h_G_data = (double*)calloc(rows * cols, sizeof(double));
+    
+    // Host pointers to device data (for kernels)
+    double **h_device_ptrs[7];
+    h_device_ptrs[0] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[1] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[2] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[3] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[4] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[5] = (double**)malloc(rows * sizeof(double*));
+    h_device_ptrs[6] = (double**)malloc(rows * sizeof(double*));
+    
+    // Setup row pointers
     for (int i = 0; i < rows; i++) {
-        (*u)[i] = &u_data[i * cols];
-        (*v)[i] = &v_data[i * cols];
-        (*p)[i] = &p_data[i * cols];
-        (*res)[i] = &res_data[i * cols];
-        (*RHS)[i] = &RHS_data[i * cols];
-        (*F)[i] = &F_data[i * cols];
-        (*G)[i] = &G_data[i * cols];
+        h_device_ptrs[0][i] = d_u_data + i * cols;
+        h_device_ptrs[1][i] = d_v_data + i * cols;
+        h_device_ptrs[2][i] = d_p_data + i * cols;
+        h_device_ptrs[3][i] = d_res_data + i * cols;
+        h_device_ptrs[4][i] = d_RHS_data + i * cols;
+        h_device_ptrs[5][i] = d_F_data + i * cols;
+        h_device_ptrs[6][i] = d_G_data + i * cols;
     }
     
-    // Inicializar com zeros
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            (*u)[i][j] = 0.0;
-            (*v)[i][j] = 0.0;
-            (*p)[i][j] = 0.0;
-            (*res)[i][j] = 0.0;
-            (*RHS)[i][j] = 0.0;
-            (*F)[i][j] = 0.0;
-            (*G)[i][j] = 0.0;
-        }
+    // Copy the pointers to device
+    CHECK_CUDA_ERROR(cudaMemcpy(d_u, h_device_ptrs[0], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_v, h_device_ptrs[1], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_p, h_device_ptrs[2], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_res, h_device_ptrs[3], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_RHS, h_device_ptrs[4], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_F, h_device_ptrs[5], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_G, h_device_ptrs[6], rows * sizeof(double*), cudaMemcpyHostToDevice));
+    
+    // Copy zeros to device arrays
+    CHECK_CUDA_ERROR(cudaMemcpy(d_u_data, h_u_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_v_data, h_v_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_p_data, h_p_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_res_data, h_res_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_RHS_data, h_RHS_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_F_data, h_F_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_G_data, h_G_data, rows * cols * sizeof(double), cudaMemcpyHostToDevice));
+    
+    // Store device pointers for kernel calls
+    (*u) = d_u;
+    (*v) = d_v;
+    (*p) = d_p;
+    (*res) = d_res;
+    (*RHS) = d_RHS;
+    (*F) = d_F;
+    (*G) = d_G;
+    
+    // Free temporary host memory
+    free(h_u_data);
+    free(h_v_data);
+    free(h_p_data);
+    free(h_res_data);
+    free(h_RHS_data);
+    free(h_F_data);
+    free(h_G_data);
+    
+    for (int i = 0; i < 7; i++) {
+        free(h_device_ptrs[i]);
     }
     
     return 0;
 }
 
-// Função para liberar memória UVA
-void free_unified_memory(double **u, double **v, double **p, double **res, double **RHS, double **F, double **G, 
-                         BoundaryPoint *borders) {
-    if (u) {
-        cudaFree(u[0]); // Libera dados contíguos
-        cudaFree(u);    // Libera array de ponteiros
-    }
-    if (v) {
-        cudaFree(v[0]);
-        cudaFree(v);
-    }
-    if (p) {
-        cudaFree(p[0]);
-        cudaFree(p);
-    }
-    if (res) {
-        cudaFree(res[0]);
-        cudaFree(res);
-    }
-    if (RHS) {
-        cudaFree(RHS[0]);
-        cudaFree(RHS);
-    }
-    if (F) {
-        cudaFree(F[0]);
-        cudaFree(F);
-    }
-    if (G) {
-        cudaFree(G[0]);
-        cudaFree(G);
-    }
-    if (borders) {
-        cudaFree(borders);
-    }
+// Update the free function to match
+void free_device_memory(double **u, double **v, double **p, double **res, double **RHS, double **F, double **G, 
+                       BoundaryPoint *borders) {
+    // First row of each array contains the pointer to the contiguous data
+    double *u_data, *v_data, *p_data, *res_data, *RHS_data, *F_data, *G_data;
+    
+    // Get the first data pointer from each array
+    CHECK_CUDA_ERROR(cudaMemcpy(&u_data, u, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&v_data, v, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&p_data, p, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&res_data, res, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&RHS_data, RHS, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&F_data, F, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&G_data, G, sizeof(double*), cudaMemcpyDeviceToHost));
+    
+    // Free data memory
+    cudaFree(u_data);
+    cudaFree(v_data);
+    cudaFree(p_data);
+    cudaFree(res_data);
+    cudaFree(RHS_data);
+    cudaFree(F_data);
+    cudaFree(G_data);
+    
+    // Free pointer arrays
+    cudaFree(u);
+    cudaFree(v);
+    cudaFree(p);
+    cudaFree(res);
+    cudaFree(RHS);
+    cudaFree(F);
+    cudaFree(G);
+    
+    // Free border points
+    cudaFree(borders);
 }
 
 
-void precalculate_borders(int i_max, int j_max, BoundaryPoint *borders_ptr) { // Nome do parâmetro alterado para clareza local
+void precalculate_borders(int i_max, int j_max, BoundaryPoint *borders_ptr) {
+    // Create temporary host array for border points
+    BoundaryPoint *h_borders = (BoundaryPoint*)malloc(2 * (i_max + j_max + 2) * sizeof(BoundaryPoint));
+    
     int index = 0;
     for (int i = 0; i <= i_max + 1; i++) {
         for (int j = 0; j <= j_max + 1; j++) {
             if (i == 0 || i == i_max + 1 || j == 0 || j == j_max + 1) {
-                borders_ptr[index].i = i;
-                borders_ptr[index].j = j;
-                borders_ptr[index].position = (i == 0) ? LEFT : (i == i_max + 1) ? RIGHT : (j == 0) ? BOTTOM : TOP;
+                h_borders[index].i = i;
+                h_borders[index].j = j;
+                h_borders[index].position = (i == 0) ? LEFT : (i == i_max + 1) ? RIGHT : (j == 0) ? BOTTOM : TOP;
                 index++;
             }
         }
     }
+    
+    // Copy border points to device
+    CHECK_CUDA_ERROR(cudaMemcpy(borders_ptr, h_borders, index * sizeof(BoundaryPoint), cudaMemcpyHostToDevice));
+    
+    // Free temporary host memory
+    free(h_borders);
 }
 
 
@@ -951,8 +1019,7 @@ int main(int argc, char* argv[])
     int num_actual_border_points = 2 * (i_max + j_max + 2);
 
     // Passar num_actual_border_points para allocate_unified_memory
-    allocate_unified_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders, num_actual_border_points);
-    
+    allocate_device_memory(&u, &v, &p, &res, &RHS, &F, &G, &borders, i_max, j_max, num_actual_border_points);    
     // precalculate_borders preenche o array 'borders'.
     // Ele não precisa mais do count como parâmetro se a memória já está dimensionada corretamente.
     precalculate_borders(i_max, j_max, borders);
@@ -1028,7 +1095,7 @@ int main(int argc, char* argv[])
     fprintf(stderr, "%.6f", time_spent);
 
     // Free unified memory
-    free_unified_memory(u, v, p, res, RHS, F, G, borders);
+    free_device_memory(u, v, p, res, RHS, F, G, borders);
     return 0;
 }
 
