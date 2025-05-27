@@ -651,6 +651,124 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
     return -1; // Não convergiu
 }
 
+
+__global__ void find_max_kernel(double **matrix, int i_max, int j_max, double *block_max) {
+    const int BLOCK_SIZE = 16;
+    
+    // Compartilhar valores máximos para blocos - usar para redução local
+    __shared__ double max_shared[BLOCK_SIZE][BLOCK_SIZE+1]; // +1 para evitar conflitos de bancos
+    
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    
+    // Índices globais
+    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
+    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    
+    // Inicializar com valor mínimo
+    double local_max = -1e30; // Valor negativo grande
+    
+    // Pegar o valor da matriz se estiver dentro dos limites
+    if (i <= i_max && j <= j_max) {
+        local_max = matrix[i][j];
+    }
+    
+    // Armazenar valor local em memória compartilhada
+    max_shared[tx][ty] = local_max;
+    
+    __syncthreads();
+    
+    // Redução paralela dentro do bloco - encontrando o máximo
+    // Redução em x
+    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+        if (tx < stride) {
+            max_shared[tx][ty] = fmax(max_shared[tx][ty], max_shared[tx + stride][ty]);
+        }
+        __syncthreads();
+    }
+    
+    // Redução em y - apenas threads com tx==0 participam
+    if (tx == 0) {
+        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+            if (ty < stride) {
+                max_shared[0][ty] = fmax(max_shared[0][ty], max_shared[0][ty + stride]);
+            }
+            __syncthreads();
+        }
+        
+        // Thread (0,0) salva o resultado final do bloco
+        if (ty == 0) {
+            block_max[blockIdx.y * gridDim.x + blockIdx.x] = max_shared[0][0];
+        }
+    }
+}
+
+// Kernel para redução final dos máximos de blocos para um único valor
+__global__ void reduce_block_max_kernel(double *block_max, int num_blocks, double *final_max) {
+    __shared__ double shared_data[256];
+    
+    int tid = threadIdx.x;
+    
+    // Inicializar com valor mínimo
+    shared_data[tid] = -1e30;
+    
+    // Carregar dados para memória compartilhada
+    for (int i = tid; i < num_blocks; i += blockDim.x) {
+        shared_data[tid] = fmax(shared_data[tid], block_max[i]);
+    }
+    
+    __syncthreads();
+    
+    // Redução paralela para encontrar o máximo global
+    for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_data[tid] = fmax(shared_data[tid], shared_data[tid + stride]);
+        }
+        __syncthreads();
+    }
+    
+    // Thread 0 escreve o resultado final
+    if (tid == 0) {
+        *final_max = shared_data[0];
+    }
+}
+
+// Função host para encontrar o máximo de uma matriz usando CUDA
+double max_mat_cuda(int i_max, int j_max, double **matrix) {
+    const int BLOCK_SIZE = 16;
+    
+    // Configurar dimensões da grade e blocos
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    
+    // Número total de blocos
+    int total_blocks = gridDim.x * gridDim.y;
+    
+    // Alocar memória para máximos de blocos e máximo final
+    double *d_block_max, *d_final_max;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_block_max, total_blocks * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_final_max, sizeof(double)));
+    
+    // Encontrar máximos locais em cada bloco
+    find_max_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_max);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    // Reduzir máximos locais para um máximo global
+    reduce_block_max_kernel<<<1, 256>>>(d_block_max, total_blocks, d_final_max);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    // Transferir o máximo final para o host
+    double max_value;
+    CHECK_CUDA_ERROR(cudaMemcpy(&max_value, d_final_max, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    // Liberar memória
+    cudaFree(d_block_max);
+    cudaFree(d_final_max);
+    
+    return max_value;
+}
+
 /**
  * @brief Main function.
  * 
@@ -740,8 +858,8 @@ int main(int argc, char* argv[])
         printf("%.5f / %.5f\n---------------------\n", t, T);
 
         // Adaptive stepsize and weight factor for Donor-Cell
-        double u_max = max_mat(i_max, j_max, u);
-        double v_max = max_mat(i_max, j_max, v);
+        double u_max = max_mat_cuda(i_max, j_max, u);
+        double v_max = max_mat_cuda(i_max, j_max, v);
         delta_t = tau * n_min(3, Re / 2.0 / ( 1.0 / delta_x / delta_x + 1.0 / delta_y / delta_y ), delta_x / fabs(u_max), delta_y / fabs(v_max));
         gamma = fmax(u_max * delta_t / delta_x, v_max * delta_t / delta_y);
 
@@ -790,9 +908,9 @@ int main(int argc, char* argv[])
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
         // Print values (acessível diretamente da CPU devido ao UVA)
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+        printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
+        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
 
 
         t += delta_t;
