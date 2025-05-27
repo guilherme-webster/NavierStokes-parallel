@@ -557,7 +557,7 @@ __global__ void calculate_residual_and_norm_kernel(double **p, double **RHS,
 }
 
 // Kernel para redução final de normas de blocos para um único valor
-__global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, double *final_norm) {
+__global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, double *final_norm, int i_max, int j_max) {
     __shared__ double shared_data[256];
     
     int tid = threadIdx.x;
@@ -581,7 +581,7 @@ __global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, d
     
     // Thread 0 escreve o resultado final
     if (tid == 0) {
-        *final_norm = sqrt(shared_data[0] / (i_max * j_max)); // Finaliza o cálculo da norma L2
+        *final_norm = sqrt(shared_data[0] / (i_max * j_max)); // Agora i_max e j_max são parâmetros
     }
 }
 int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x, double delta_y,
