@@ -82,9 +82,8 @@ int main(int argc, char* argv[])
     int n_out = 0;
 
     clock_t start = clock();
-
+    double time_sor = 0.0;
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
 
     	// Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
@@ -120,7 +119,10 @@ int main(int argc, char* argv[])
             }
         }
         //clock_t start_UVA = clock();
-        if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
+        clock_t start_sor = clock();
+        SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
+        clock_t end_sor = clock();
+        time_sor += (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
         //clock_t end_UVA = clock();
         //double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
         //fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
@@ -140,21 +142,15 @@ int main(int argc, char* argv[])
         //     n_out++;
         // }
 
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-
-            // Printing some key values from u, v, p matrices
-            // For example, print central values and some boundary values
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-
         t += delta_t;
         n++;
     }
-
+    printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+    printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    fprintf(stderr, "%.6f", time_spent);
+    fprintf(stderr, "%.6f", time_sor);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
