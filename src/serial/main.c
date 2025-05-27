@@ -83,7 +83,6 @@ int main(int argc, char* argv[])
     clock_t start = clock();
 
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
 
     	// Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
