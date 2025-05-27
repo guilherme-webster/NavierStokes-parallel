@@ -25,18 +25,18 @@
  * CUDA kernel for updating ghost cells
  */
 __global__ void update_ghost_cells_kernel(double* d_p, int i_max, int j_max, int pitch) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Update left and right ghost cells
-    if (i >= 1 && i <= j_max) {
-        d_p[i * pitch + 0] = d_p[i * pitch + 1];                  // Left boundary
-        d_p[i * pitch + (i_max + 1)] = d_p[i * pitch + i_max];    // Right boundary
+    // Atualizar bordas horizontais
+    if (idx >= 1 && idx <= j_max) {
+        d_p[idx * pitch + 0] = d_p[idx * pitch + 1];                  // Left boundary
+        d_p[idx * pitch + (i_max + 1)] = d_p[idx * pitch + i_max];    // Right boundary
     }
     
-    // Update top and bottom ghost cells
-    if (i >= 1 && i <= i_max) {
-        d_p[0 * pitch + i] = d_p[1 * pitch + i];                  // Bottom boundary
-        d_p[(j_max + 1) * pitch + i] = d_p[j_max * pitch + i];    // Top boundary
+    // Atualizar bordas verticais
+    if (idx >= 1 && idx <= i_max) {
+        d_p[0 * pitch + idx] = d_p[1 * pitch + idx];                  // Bottom boundary
+        d_p[(j_max + 1) * pitch + idx] = d_p[j_max * pitch + idx];    // Top boundary
     }
 }
 
@@ -158,16 +158,6 @@ int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y,
     // Calculate L2 norm of initial p
     double norm_p = L2(p, i_max, j_max);
     
-    // Debug: Print initial values
-    double sum_p = 0.0, sum_rhs = 0.0;
-    for (int i = 1; i <= i_max; i++) {
-        for (int j = 1; j <= j_max; j++) {
-            sum_p += fabs(p[i][j]);
-            sum_rhs += fabs(RHS[i][j]);
-        }
-    }
-    printf("Initial values: sum_p=%g, sum_rhs=%g, norm_p=%g\n", sum_p, sum_rhs, norm_p);
-    
     // Define kernel launch parameters
     dim3 blockSize(16, 16);
     dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
@@ -203,16 +193,8 @@ int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y,
         cudaMemcpy(&h_norm, d_norm, sizeof(double), cudaMemcpyDeviceToHost);
         h_norm = sqrt(h_norm / (i_max * j_max));
         
-        // Debug: Print progress
-        if (it == 5 || it % 100 == 0) {
-            // Copy a sample of data back to host to check progress
-            cudaMemcpy(p[1], d_p + 1 * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
-            printf("Iteration %d: p[1][1]=%g, p[1][2]=%g, h_norm=%g\n", 
-                   it, p[1][1], p[1][2], h_norm);
-        }
-        
         // Check convergence
-        if (h_norm <= eps * (norm_p + 2.0)) {
+        if (h_norm <= eps * (norm_p + 0.01)) {
             // Copy final results back to host
             for (int j = 0; j < height; j++) {
                 cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);

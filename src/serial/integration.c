@@ -161,7 +161,7 @@ int SOR(double** p, int i_max, int j_max, double delta_x, double delta_y, double
 
         //printf("%.5f\n", L2(res, i_max, j_max));
         // Abortion condition.
-        if (L2(res, i_max, j_max) <= eps * (norm_p + 2.0)) {
+        if (L2(res, i_max, j_max) <= eps * (norm_p + 0.01)) {
             return 0;
         }
 
