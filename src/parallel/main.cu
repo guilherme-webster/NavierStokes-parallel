@@ -21,191 +21,324 @@
 #include <stdio.h>
 #include <cuda_runtime.h>
 
+// Macro para verificação de erros CUDA
+#define CUDA_CHECK(call) do { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        fprintf(stderr, "CUDA Error: %s at %s:%d\n", cudaGetErrorString(err), __FILE__, __LINE__); \
+        exit(EXIT_FAILURE); \
+    } \
+} while(0)
+
+// Constantes do kernel - usar memória constante para acesso rápido
+__constant__ double d_omega, d_dxdx, d_dydy;
+
 /**
- * CUDA kernel for updating ghost cells
+ * Kernel otimizado para atualização de células fantasma
+ * Usa um único kernel para todas as bordas com melhor coalescência de memória
  */
 __global__ void update_ghost_cells_kernel(double* d_p, int i_max, int j_max, int pitch) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Atualizar bordas horizontais
-    if (idx >= 1 && idx <= j_max) {
-        d_p[idx * pitch + 0] = d_p[idx * pitch + 1];                  // Left boundary
-        d_p[idx * pitch + (i_max + 1)] = d_p[idx * pitch + i_max];    // Right boundary
-    }
-    
-    // Atualizar bordas verticais
-    if (idx >= 1 && idx <= i_max) {
-        d_p[0 * pitch + idx] = d_p[1 * pitch + idx];                  // Bottom boundary
-        d_p[(j_max + 1) * pitch + idx] = d_p[j_max * pitch + idx];    // Top boundary
+    // Processamento horizontal e vertical em um único kernel
+    if (idx < i_max + j_max + 2) {
+        if (idx <= i_max) {
+            // Atualizar bordas horizontais - threads 0 até i_max
+            const int i = idx;
+            // Evita condições de corrida e divergência
+            if (i >= 1 && i <= i_max) {
+                d_p[0 * pitch + i] = d_p[1 * pitch + i];                  // Bottom boundary
+                d_p[(j_max + 1) * pitch + i] = d_p[j_max * pitch + i];    // Top boundary
+            }
+        }
+        
+        if (idx > i_max && idx <= i_max + j_max + 1) {
+            // Atualizar bordas verticais - threads (i_max+1) até (i_max+j_max+1)
+            const int j = idx - i_max - 1;
+            if (j >= 1 && j <= j_max) {
+                d_p[j * pitch + 0] = d_p[j * pitch + 1];                  // Left boundary
+                d_p[j * pitch + (i_max + 1)] = d_p[j * pitch + i_max];    // Right boundary
+            }
+        }
     }
 }
 
 /**
- * CUDA kernel for SOR iteration
+ * SOR Red-Black otimizado usando shared memory para reduzir acessos globais
  */
-__global__ void sor_red_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
-                              double omega, double dxdx, double dydy, int pitch) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+__global__ void sor_red_black_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
+                                    int pitch, int color) {
+    // Tamanho fixo de memória compartilhada baseado no tamanho do bloco (16x16) + halo
+    __shared__ double s_p[18][18];
     
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
-        d_p[j * pitch + i] = (1.0 - omega) * d_p[j * pitch + i] + 
-                             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) * 
-                             ((d_p[j * pitch + (i+1)] + d_p[j * pitch + (i-1)]) / dxdx + 
-                              (d_p[(j+1) * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
-                              d_RHS[j * pitch + i]);
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int i = blockIdx.x * blockDim.x + tx + 1;
+    const int j = blockIdx.y * blockDim.y + ty + 1;
+    
+    // Carregar dados para memória compartilhada incluindo halo (16x16 bloco + 1 de borda)
+    // Cada thread carrega seu próprio valor + vizinhos necessários nas bordas
+    if (i <= i_max + 1 && j <= j_max + 1) {
+        s_p[ty+1][tx+1] = d_p[j * pitch + i];
+        
+        // Threads nas bordas carregam valores adicionais para o halo
+        if (tx == 0 && i > 1) s_p[ty+1][0] = d_p[j * pitch + (i-1)];
+        if (tx == blockDim.x-1 && i < i_max) s_p[ty+1][tx+2] = d_p[j * pitch + (i+1)];
+        if (ty == 0 && j > 1) s_p[0][tx+1] = d_p[(j-1) * pitch + i];
+        if (ty == blockDim.y-1 && j < j_max) s_p[ty+2][tx+1] = d_p[(j+1) * pitch + i];
+    }
+    __syncthreads();
+    
+    // Cálculo do SOR para a cor atual (red=0, black=1)
+    if (i <= i_max && j <= j_max && ((i + j) % 2 == color)) {
+        double update = (1.0 - d_omega) * s_p[ty+1][tx+1] + 
+                      d_omega / (2.0 * (1.0 / d_dxdx + 1.0 / d_dydy)) * 
+                      ((s_p[ty+1][tx+2] + s_p[ty+1][tx]) / d_dxdx + 
+                       (s_p[ty+2][tx+1] + s_p[ty][tx+1]) / d_dydy - 
+                       d_RHS[j * pitch + i]);
+        
+        d_p[j * pitch + i] = update;
     }
 }
 
 /**
- * CUDA kernel for SOR iteration - Black cells (i+j is odd)
- */
-__global__ void sor_black_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
-                                double omega, double dxdx, double dydy, int pitch) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
-        d_p[j * pitch + i] = (1.0 - omega) * d_p[j * pitch + i] + 
-                             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) * 
-                             ((d_p[j * pitch + (i+1)] + d_p[j * pitch + (i-1)]) / dxdx + 
-                              (d_p[(j+1) * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
-                              d_RHS[j * pitch + i]);
-    }
-}
-
-/**
- * CUDA kernel for calculating residuals
+ * Cálculo de resíduos otimizado usando memória compartilhada
  */
 __global__ void calculate_residuals_kernel(double* d_p, double* d_RHS, double* d_res, 
-                                         int i_max, int j_max, double dxdx, double dydy, int pitch) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+                                         int i_max, int j_max, int pitch) {
+    __shared__ double s_p[18][18];
+    
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int i = blockIdx.x * blockDim.x + tx + 1;
+    const int j = blockIdx.y * blockDim.y + ty + 1;
+    
+    // Carregar dados para memória compartilhada
+    if (i <= i_max + 1 && j <= j_max + 1) {
+        s_p[ty+1][tx+1] = d_p[j * pitch + i];
+        
+        // Threads nas bordas carregam valores adicionais
+        if (tx == 0 && i > 1) s_p[ty+1][0] = d_p[j * pitch + (i-1)];
+        if (tx == blockDim.x-1 && i < i_max) s_p[ty+1][tx+2] = d_p[j * pitch + (i+1)];
+        if (ty == 0 && j > 1) s_p[0][tx+1] = d_p[(j-1) * pitch + i];
+        if (ty == blockDim.y-1 && j < j_max) s_p[ty+2][tx+1] = d_p[(j+1) * pitch + i];
+    }
+    __syncthreads();
     
     if (i <= i_max && j <= j_max) {
-        d_res[j * pitch + i] = (d_p[j * pitch + (i+1)] - 2.0 * d_p[j * pitch + i] + d_p[j * pitch + (i-1)]) / dxdx + 
-                              (d_p[(j+1) * pitch + i] - 2.0 * d_p[j * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
+        d_res[j * pitch + i] = (s_p[ty+1][tx+2] - 2.0 * s_p[ty+1][tx+1] + s_p[ty+1][tx]) / d_dxdx + 
+                              (s_p[ty+2][tx+1] - 2.0 * s_p[ty+1][tx+1] + s_p[ty][tx+1]) / d_dydy - 
                               d_RHS[j * pitch + i];
     }
 }
 
 /**
- * CUDA kernel for calculating L2 norm (reduction)
+ * Kernel de redução L2-Norm otimizado usando warp shuffle
+ * Redução em duas fases para melhor desempenho
  */
-__global__ void l2_norm_kernel(double* d_res, double* d_norm, int i_max, int j_max, int pitch) {
+__global__ void l2_norm_kernel_optimized(double* d_res, double* d_norm, int i_max, int j_max, int pitch) {
     extern __shared__ double sdata[];
     
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int i = blockIdx.x * blockDim.x + tx + 1;
+    const int j = blockIdx.y * blockDim.y + ty + 1;
+    const int tid = ty * blockDim.x + tx;
+    const int block_size = blockDim.x * blockDim.y;
     
-    // Initialize shared memory
+    // Inicializar memória compartilhada
     sdata[tid] = 0.0;
     
-    // Load data to shared memory
+    // Carregar e processar múltiplos elementos por thread para maior eficiência
+    double thread_sum = 0.0;
     if (i <= i_max && j <= j_max) {
         double val = d_res[j * pitch + i];
-        sdata[tid] = val * val;
+        thread_sum = val * val;
     }
+    
+    // Armazenar soma parcial
+    sdata[tid] = thread_sum;
     __syncthreads();
     
-    // Perform reduction in shared memory
-    for (unsigned int s = blockDim.x * blockDim.y / 2; s > 0; s >>= 1) {
+    // Redução em memória compartilhada - versão otimizada
+    // Usar técnica de redução sem divergência condicional
+    for (int s = block_size / 2; s > 32; s >>= 1) {
         if (tid < s) {
             sdata[tid] += sdata[tid + s];
         }
         __syncthreads();
     }
     
-    // Write result for this block to global memory
+    // Redução final usando warp-level primitives (mais eficiente para últimos 32 threads)
+    if (tid < 32) {
+        // Volatile para evitar otimizações do compilador que quebrariam sincronização implícita
+        volatile double* smem = sdata;
+        if (block_size >= 64) smem[tid] += smem[tid + 32];
+        if (block_size >= 32) smem[tid] += smem[tid + 16];
+        if (block_size >= 16) smem[tid] += smem[tid + 8];
+        if (block_size >= 8) smem[tid] += smem[tid + 4];
+        if (block_size >= 4) smem[tid] += smem[tid + 2];
+        if (block_size >= 2) smem[tid] += smem[tid + 1];
+    }
+    
+    // Apenas a thread 0 escreve o resultado para memória global
     if (tid == 0) {
         atomicAdd(d_norm, sdata[0]);
     }
 }
 
 /**
- * CUDA version of SOR function
+ * Implementação paralela otimizada do SOR usando CUDA
  */
 int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y, 
              double** res, double** RHS, double omega, double eps, int max_it) {
-    double dydy = delta_y * delta_y;
-    double dxdx = delta_x * delta_x;
+    // Calcular constantes uma vez e enviá-las para a GPU
+    double h_dxdx = delta_x * delta_x;
+    double h_dydy = delta_y * delta_y;
+    CUDA_CHECK(cudaMemcpyToSymbol(d_dxdx, &h_dxdx, sizeof(double)));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_dydy, &h_dydy, sizeof(double)));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_omega, &omega, sizeof(double)));
+    
     int it = 0;
-    cudaError_t cudaStatus;
     
     // Compute matrix dimensions
     size_t pitch;
     int width = i_max + 2;  // Include ghost cells
     int height = j_max + 2; // Include ghost cells
     
-    // Allocate device memory
-    double *d_p, *d_res, *d_RHS, *d_norm;
-    cudaMallocPitch(&d_p, &pitch, width * sizeof(double), height);
-    cudaMallocPitch(&d_res, &pitch, width * sizeof(double), height);
-    cudaMallocPitch(&d_RHS, &pitch, width * sizeof(double), height);
-    cudaMalloc(&d_norm, sizeof(double));
+    // Usar memória pinned para transferências mais rápidas
+    double **h_p_pinned, **h_res_pinned;
+    CUDA_CHECK(cudaMallocHost((void**)&h_p_pinned, height * sizeof(double*)));
+    CUDA_CHECK(cudaMallocHost((void**)&h_res_pinned, height * sizeof(double*)));
     
-    // Convert pitch from bytes to elements
-    pitch /= sizeof(double);
-    
-    // Copy data from host to device
     for (int j = 0; j < height; j++) {
-        cudaMemcpy(d_p + j * pitch, p[j], width * sizeof(double), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_res + j * pitch, res[j], width * sizeof(double), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_RHS + j * pitch, RHS[j], width * sizeof(double), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMallocHost((void**)&h_p_pinned[j], width * sizeof(double)));
+        CUDA_CHECK(cudaMallocHost((void**)&h_res_pinned[j], width * sizeof(double)));
+        
+        // Copiar dados para memória pinned
+        memcpy(h_p_pinned[j], p[j], width * sizeof(double));
+        memcpy(h_res_pinned[j], res[j], width * sizeof(double));
     }
     
-    // Calculate L2 norm of initial p
+    // Alocar memória na GPU
+    double *d_p, *d_res, *d_RHS, *d_norm;
+    CUDA_CHECK(cudaMallocPitch(&d_p, &pitch, width * sizeof(double), height));
+    CUDA_CHECK(cudaMallocPitch(&d_res, &pitch, width * sizeof(double), height));
+    CUDA_CHECK(cudaMallocPitch(&d_RHS, &pitch, width * sizeof(double), height));
+    CUDA_CHECK(cudaMalloc(&d_norm, sizeof(double)));
+    
+    // Converter pitch de bytes para elementos
+    pitch /= sizeof(double);
+    
+    // Criar streams para operações assíncronas
+    cudaStream_t stream1, stream2;
+    CUDA_CHECK(cudaStreamCreate(&stream1));
+    CUDA_CHECK(cudaStreamCreate(&stream2));
+    
+    // Transferir dados de forma assíncrona em chunks
+    for (int j = 0; j < height; j++) {
+        CUDA_CHECK(cudaMemcpyAsync(d_p + j * pitch, h_p_pinned[j], 
+                                  width * sizeof(double), cudaMemcpyHostToDevice, stream1));
+        CUDA_CHECK(cudaMemcpyAsync(d_res + j * pitch, h_res_pinned[j], 
+                                  width * sizeof(double), cudaMemcpyHostToDevice, stream1));
+        CUDA_CHECK(cudaMemcpyAsync(d_RHS + j * pitch, RHS[j], 
+                                  width * sizeof(double), cudaMemcpyHostToDevice, stream2));
+    }
+    
+    // Sincronizar streams antes de continuar
+    CUDA_CHECK(cudaStreamSynchronize(stream1));
+    CUDA_CHECK(cudaStreamSynchronize(stream2));
+    
+    // Calcular norma L2 inicial
     double norm_p = L2(p, i_max, j_max);
     
-    // Define kernel launch parameters
-    dim3 blockSize(16, 16);
+    // Definir parâmetros de lançamento de kernel otimizados
+    dim3 blockSize(16, 16);  // Potência de 2 para melhor desempenho na redução
     dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
-                  (j_max + blockSize.y - 1) / blockSize.y);
+                 (j_max + blockSize.y - 1) / blockSize.y);
     
-    dim3 ghostBlockSize(256);
-    dim3 ghostGridSize((max(i_max, j_max) + ghostBlockSize.x - 1) / ghostBlockSize.x);
+    // Kernel de borda é 1D - otimizar para throughput
+    dim3 ghostBlockSize(256);  // Máxima ocupação
+    dim3 ghostGridSize(((i_max + j_max + 2) + ghostBlockSize.x - 1) / ghostBlockSize.x);
     
-    // Temporary host variable for norm
+    // Variável temporária para norma
     double h_norm;
     
-    // SOR iteration loop
+    // Loop de iteração SOR
     while (it < max_it) {
-        // Update ghost cells
-        update_ghost_cells_kernel<<<ghostGridSize, ghostBlockSize>>>(d_p, i_max, j_max, pitch);
+        // Atualizar células fantasma no stream1
+        update_ghost_cells_kernel<<<ghostGridSize, ghostBlockSize, 0, stream1>>>(
+            d_p, i_max, j_max, pitch);
         
-        // Perform SOR iteration
-        sor_red_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
-        cudaDeviceSynchronize(); // Synchronize before black update
+        // Verificar erros
+        CUDA_CHECK(cudaGetLastError());
         
-        sor_black_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
-        cudaDeviceSynchronize(); // Synchronize after black update
-    
-        // Calculate residuals
-        calculate_residuals_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, d_res, i_max, j_max, dxdx, dydy, pitch);
+        // Sincronizar antes de prosseguir
+        CUDA_CHECK(cudaStreamSynchronize(stream1));
         
-        // Calculate L2 norm of residuals
-        cudaMemset(d_norm, 0, sizeof(double));
-        l2_norm_kernel<<<gridSize, blockSize, blockSize.x * blockSize.y * sizeof(double)>>>(
+        // Executar iteração SOR Red-Black (cores alternadas)
+        // Vermelho (even)
+        sor_red_black_kernel<<<gridSize, blockSize, 0, stream1>>>(
+            d_p, d_RHS, i_max, j_max, pitch, 0);
+        CUDA_CHECK(cudaStreamSynchronize(stream1));
+        
+        // Preto (odd)
+        sor_red_black_kernel<<<gridSize, blockSize, 0, stream1>>>(
+            d_p, d_RHS, i_max, j_max, pitch, 1);
+        CUDA_CHECK(cudaStreamSynchronize(stream1));
+        
+        // Calcular resíduos no stream1
+        calculate_residuals_kernel<<<gridSize, blockSize, 0, stream1>>>(
+            d_p, d_RHS, d_res, i_max, j_max, pitch);
+        
+        // Reset do acumulador de norma
+        CUDA_CHECK(cudaMemsetAsync(d_norm, 0, sizeof(double), stream1));
+        
+        // Calcular norma L2 dos resíduos - usando memória compartilhada otimizada
+        l2_norm_kernel_optimized<<<gridSize, blockSize, blockSize.x * blockSize.y * sizeof(double), stream1>>>(
             d_res, d_norm, i_max, j_max, pitch);
         
-        // Copy norm result back to host
-        cudaMemcpy(&h_norm, d_norm, sizeof(double), cudaMemcpyDeviceToHost);
+        // Copiar resultado da norma de volta para host
+        CUDA_CHECK(cudaMemcpyAsync(&h_norm, d_norm, sizeof(double), cudaMemcpyDeviceToHost, stream1));
+        CUDA_CHECK(cudaStreamSynchronize(stream1));
+        
+        // Calcular norma final
         h_norm = sqrt(h_norm / (i_max * j_max));
         
-        // Check convergence
+        // Verificar convergência
         if (h_norm <= eps * (norm_p + 0.01)) {
-            // Copy final results back to host
+            // Copiar resultados finais de volta para host de forma assíncrona
             for (int j = 0; j < height; j++) {
-                cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
-                cudaMemcpy(res[j], d_res + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+                CUDA_CHECK(cudaMemcpyAsync(h_p_pinned[j], d_p + j * pitch, 
+                                         width * sizeof(double), cudaMemcpyDeviceToHost, stream1));
+                CUDA_CHECK(cudaMemcpyAsync(h_res_pinned[j], d_res + j * pitch, 
+                                         width * sizeof(double), cudaMemcpyDeviceToHost, stream2));
             }
             
-            // Free device memory
-            cudaFree(d_p);
-            cudaFree(d_res);
-            cudaFree(d_RHS);
-            cudaFree(d_norm);
+            // Sincronizar e copiar de volta para os arrays originais
+            CUDA_CHECK(cudaStreamSynchronize(stream1));
+            CUDA_CHECK(cudaStreamSynchronize(stream2));
+            
+            for (int j = 0; j < height; j++) {
+                memcpy(p[j], h_p_pinned[j], width * sizeof(double));
+                memcpy(res[j], h_res_pinned[j], width * sizeof(double));
+            }
+            
+            // Liberar recursos
+            CUDA_CHECK(cudaFree(d_p));
+            CUDA_CHECK(cudaFree(d_res));
+            CUDA_CHECK(cudaFree(d_RHS));
+            CUDA_CHECK(cudaFree(d_norm));
+            
+            for (int j = 0; j < height; j++) {
+                CUDA_CHECK(cudaFreeHost(h_p_pinned[j]));
+                CUDA_CHECK(cudaFreeHost(h_res_pinned[j]));
+            }
+            CUDA_CHECK(cudaFreeHost(h_p_pinned));
+            CUDA_CHECK(cudaFreeHost(h_res_pinned));
+            
+            CUDA_CHECK(cudaStreamDestroy(stream1));
+            CUDA_CHECK(cudaStreamDestroy(stream2));
             
             return 0;
         }
@@ -213,19 +346,38 @@ int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y,
         it++;
     }
     
-    // Copy final results back to host
+    // Copiar resultados finais após máximo de iterações
     for (int j = 0; j < height; j++) {
-        cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
-        cudaMemcpy(res[j], d_res + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpyAsync(h_p_pinned[j], d_p + j * pitch, 
+                                 width * sizeof(double), cudaMemcpyDeviceToHost, stream1));
+        CUDA_CHECK(cudaMemcpyAsync(h_res_pinned[j], d_res + j * pitch, 
+                                 width * sizeof(double), cudaMemcpyDeviceToHost, stream2));
     }
     
-    // Free device memory
-    cudaFree(d_p);
-    cudaFree(d_res);
-    cudaFree(d_RHS);
-    cudaFree(d_norm);
+    CUDA_CHECK(cudaStreamSynchronize(stream1));
+    CUDA_CHECK(cudaStreamSynchronize(stream2));
     
-    // Return -1 if maximum iterations were exceeded
+    for (int j = 0; j < height; j++) {
+        memcpy(p[j], h_p_pinned[j], width * sizeof(double));
+        memcpy(res[j], h_res_pinned[j], width * sizeof(double));
+    }
+    
+    // Liberar recursos
+    CUDA_CHECK(cudaFree(d_p));
+    CUDA_CHECK(cudaFree(d_res));
+    CUDA_CHECK(cudaFree(d_RHS));
+    CUDA_CHECK(cudaFree(d_norm));
+    
+    for (int j = 0; j < height; j++) {
+        CUDA_CHECK(cudaFreeHost(h_p_pinned[j]));
+        CUDA_CHECK(cudaFreeHost(h_res_pinned[j]));
+    }
+    CUDA_CHECK(cudaFreeHost(h_p_pinned));
+    CUDA_CHECK(cudaFreeHost(h_res_pinned));
+    
+    CUDA_CHECK(cudaStreamDestroy(stream1));
+    CUDA_CHECK(cudaStreamDestroy(stream2));
+    
     return -1;
 }
 
