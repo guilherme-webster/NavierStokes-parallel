@@ -84,7 +84,6 @@ int main(int argc, char* argv[])
     clock_t start = clock();
 
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
 
     	// Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
@@ -140,17 +139,11 @@ int main(int argc, char* argv[])
         //     n_out++;
         // }
 
-            printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-
-            // Printing some key values from u, v, p matrices
-            // For example, print central values and some boundary values
-            printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-            printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-
         t += delta_t;
         n++;
     }
-
+    printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+    printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 

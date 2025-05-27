@@ -968,8 +968,6 @@ int main(int argc, char* argv[])
     clock_t start = clock();
 
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
-
         // Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat_cuda(i_max, j_max, u);
         double v_max = max_mat_cuda(i_max, j_max, v);
@@ -978,16 +976,16 @@ int main(int argc, char* argv[])
 
         // Set boundary conditions (permanecem na CPU)
         if (problem == 1) {
-        set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
-        set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
-        set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
-        set_inflow_cuda(i_max, j_max, u, v, TOP, 1.0, 0.0, borders, num_actual_border_points);
-    } else if (problem == 2) {
-        set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
-        set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
-        set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
-        set_inflow_cuda(i_max, j_max, u, v, TOP, sin(f*t), 0.0, borders, num_actual_border_points);           
-    }
+            set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
+            set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
+            set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
+            set_inflow_cuda(i_max, j_max, u, v, TOP, 1.0, 0.0, borders, num_actual_border_points);
+        } else if (problem == 2) {
+            set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
+            set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
+            set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
+            set_inflow_cuda(i_max, j_max, u, v, TOP, sin(f*t), 0.0, borders, num_actual_border_points);           
+        }
 
         dim3 blockDim(16, 16);
         dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
@@ -1020,16 +1018,11 @@ int main(int argc, char* argv[])
         CHECK_CUDA_ERROR(cudaGetLastError());
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-        // Print values (acessível diretamente da CPU devido ao UVA)
-        printf("TIMESTEP: %d TIME: %.6f\n", n_out, t);
-        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-
-
         t += delta_t;
         n++;
     }
-
+        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
+        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
     fprintf(stderr, "%.6f", time_spent);
