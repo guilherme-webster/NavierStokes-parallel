@@ -19,13 +19,201 @@
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
+#include <cuda_runtime.h>
 
 /**
- * @brief Main function.
- * 
- * This is the main function.
- * @return 0 on exit.
+ * CUDA kernel for updating ghost cells
  */
+__global__ void update_ghost_cells_kernel(double* d_p, int i_max, int j_max, int pitch) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Update left and right ghost cells
+    if (i >= 1 && i <= j_max) {
+        d_p[i * pitch + 0] = d_p[i * pitch + 1];                  // Left boundary
+        d_p[i * pitch + (i_max + 1)] = d_p[i * pitch + i_max];    // Right boundary
+    }
+    
+    // Update top and bottom ghost cells
+    if (i >= 1 && i <= i_max) {
+        d_p[0 * pitch + i] = d_p[1 * pitch + i];                  // Bottom boundary
+        d_p[(j_max + 1) * pitch + i] = d_p[j_max * pitch + i];    // Top boundary
+    }
+}
+
+/**
+ * CUDA kernel for SOR iteration
+ */
+__global__ void sor_iteration_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
+                                    double omega, double dxdx, double dydy, int pitch) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max) {
+        d_p[j * pitch + i] = (1.0 - omega) * d_p[j * pitch + i] + 
+                             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) * 
+                             ((d_p[j * pitch + (i+1)] + d_p[j * pitch + (i-1)]) / dxdx + 
+                              (d_p[(j+1) * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
+                              d_RHS[j * pitch + i]);
+    }
+}
+
+/**
+ * CUDA kernel for calculating residuals
+ */
+__global__ void calculate_residuals_kernel(double* d_p, double* d_RHS, double* d_res, 
+                                         int i_max, int j_max, double dxdx, double dydy, int pitch) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max) {
+        d_res[j * pitch + i] = (d_p[j * pitch + (i+1)] - 2.0 * d_p[j * pitch + i] + d_p[j * pitch + (i-1)]) / dxdx + 
+                              (d_p[(j+1) * pitch + i] - 2.0 * d_p[j * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
+                              d_RHS[j * pitch + i];
+    }
+}
+
+/**
+ * CUDA kernel for calculating L2 norm (reduction)
+ */
+__global__ void l2_norm_kernel(double* d_res, double* d_norm, int i_max, int j_max, int pitch) {
+    extern __shared__ double sdata[];
+    
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    
+    // Initialize shared memory
+    sdata[tid] = 0.0;
+    
+    // Load data to shared memory
+    if (i <= i_max && j <= j_max) {
+        double val = d_res[j * pitch + i];
+        sdata[tid] = val * val;
+    }
+    __syncthreads();
+    
+    // Perform reduction in shared memory
+    for (unsigned int s = blockDim.x * blockDim.y / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    
+    // Write result for this block to global memory
+    if (tid == 0) {
+        atomicAdd(d_norm, sdata[0]);
+    }
+}
+
+/**
+ * CUDA version of SOR function
+ */
+int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y, 
+             double** res, double** RHS, double omega, double eps, int max_it) {
+    double dydy = delta_y * delta_y;
+    double dxdx = delta_x * delta_x;
+    int it = 0;
+    cudaError_t cudaStatus;
+    
+    // Compute matrix dimensions
+    size_t pitch;
+    int width = i_max + 2;  // Include ghost cells
+    int height = j_max + 2; // Include ghost cells
+    
+    // Allocate device memory
+    double *d_p, *d_res, *d_RHS, *d_norm;
+    cudaMallocPitch(&d_p, &pitch, width * sizeof(double), height);
+    cudaMallocPitch(&d_res, &pitch, width * sizeof(double), height);
+    cudaMallocPitch(&d_RHS, &pitch, width * sizeof(double), height);
+    cudaMalloc(&d_norm, sizeof(double));
+    
+    // Convert pitch from bytes to elements
+    pitch /= sizeof(double);
+    
+    // Copy data from host to device
+    for (int j = 0; j < height; j++) {
+        cudaMemcpy(d_p + j * pitch, p[j], width * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_res + j * pitch, res[j], width * sizeof(double), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_RHS + j * pitch, RHS[j], width * sizeof(double), cudaMemcpyHostToDevice);
+    }
+    
+    // Calculate L2 norm of initial p
+    double norm_p = L2(p, i_max, j_max);
+    
+    // Define kernel launch parameters
+    dim3 blockSize(16, 16);
+    dim3 gridSize((i_max + blockSize.x - 1) / blockSize.x, 
+                  (j_max + blockSize.y - 1) / blockSize.y);
+    
+    dim3 ghostBlockSize(256);
+    dim3 ghostGridSize((max(i_max, j_max) + ghostBlockSize.x - 1) / ghostBlockSize.x);
+    
+    // Temporary host variable for norm
+    double h_norm;
+    
+    // SOR iteration loop
+    while (it < max_it) {
+        // Update ghost cells
+        update_ghost_cells_kernel<<<ghostGridSize, ghostBlockSize>>>(d_p, i_max, j_max, pitch);
+        
+        // Perform SOR iteration
+        sor_iteration_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
+        
+        // Calculate residuals
+        calculate_residuals_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, d_res, i_max, j_max, dxdx, dydy, pitch);
+        
+        // Calculate L2 norm of residuals
+        cudaMemset(d_norm, 0, sizeof(double));
+        l2_norm_kernel<<<gridSize, blockSize, blockSize.x * blockSize.y * sizeof(double)>>>(
+            d_res, d_norm, i_max, j_max, pitch);
+        
+        // Copy norm result back to host
+        cudaMemcpy(&h_norm, d_norm, sizeof(double), cudaMemcpyDeviceToHost);
+        h_norm = sqrt(h_norm / (i_max * j_max));
+        
+        // Check convergence
+        if (h_norm <= eps * (norm_p + 0.01)) {
+            // Copy final results back to host
+            for (int j = 0; j < height; j++) {
+                cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemcpy(res[j], d_res + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+            }
+            
+            // Free device memory
+            cudaFree(d_p);
+            cudaFree(d_res);
+            cudaFree(d_RHS);
+            cudaFree(d_norm);
+            
+            return 0;
+        }
+        
+        it++;
+    }
+    
+    // Copy final results back to host
+    for (int j = 0; j < height; j++) {
+        cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+        cudaMemcpy(res[j], d_res + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
+    }
+    
+    // Free device memory
+    cudaFree(d_p);
+    cudaFree(d_res);
+    cudaFree(d_RHS);
+    cudaFree(d_norm);
+    
+    // Return -1 if maximum iterations were exceeded
+    return -1;
+}
+
+/**
+* @brief Main function.
+* 
+* This is the main function.
+* @return 0 on exit.
+*/
 
 int main(int argc, char* argv[])
 {
@@ -137,8 +325,7 @@ int main(int argc, char* argv[])
         printf("RHS calculated!\n");
 
         // Execute SOR step.
-        if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
-        printf("SOR complete!\n");
+        int sor_result = SOR_CUDA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
 
         // Update velocities.
         for (i = 1; i <= i_max; i++ ) {
