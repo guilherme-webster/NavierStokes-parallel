@@ -244,46 +244,6 @@ __global__ void update_velocities_kernel(double **u, double **v, double **F, dou
     }
 }
 
-// SOR kernel usando UVA - versão Red-Black simplificada
-__global__ void sor_red_kernel_uva(double **p, double **RHS, 
-                                  int i_max, int j_max, double delta_x, double delta_y, 
-                                  double omega) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
-        double dx2 = delta_x * delta_x;
-        double dy2 = delta_y * delta_y;
-        double coeff = 2.0 * (1.0/dx2 + 1.0/dy2);
-        
-        double p_old = p[i][j];
-        p[i][j] = (1.0 - omega) * p_old + 
-                  omega / coeff * 
-                  ((p[i+1][j] + p[i-1][j]) / dx2 +
-                   (p[i][j+1] + p[i][j-1]) / dy2 -
-                   RHS[i][j]);
-    }
-}
-
-__global__ void sor_black_kernel_uva(double **p, double **RHS, 
-                                    int i_max, int j_max, double delta_x, double delta_y, 
-                                    double omega) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-    
-    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
-        double dx2 = delta_x * delta_x;
-        double dy2 = delta_y * delta_y;
-        double coeff = 2.0 * (1.0/dx2 + 1.0/dy2);
-        
-        double p_old = p[i][j];
-        p[i][j] = (1.0 - omega) * p_old + 
-                  omega / coeff * 
-                  ((p[i+1][j] + p[i-1][j]) / dx2 +
-                   (p[i][j+1] + p[i][j-1]) / dy2 -
-                   RHS[i][j]);
-    }
-}
 
 // Kernel otimizado para atualizar bordas usando pontos pré-calculados
 __global__ void update_boundaries_with_precalc_kernel(double **p, BoundaryPoint *borders, int border_count) {
@@ -309,23 +269,6 @@ __global__ void update_boundaries_with_precalc_kernel(double **p, BoundaryPoint 
                 p[i][j] = p[i][j-1];  // Copia do vizinho abaixo
                 break;
         }
-    }
-}
-
-
-// Kernel para calcular o resíduo da equação de Poisson: L(p) - RHS
-__global__ void calculate_poisson_residual_kernel(double **p, double **RHS, double **res,
-                                                int i_max, int j_max, double delta_x, double delta_y) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
-    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
-
-    if (i <= i_max && j <= j_max) {
-        double dx2 = delta_x * delta_x;
-        double dy2 = delta_y * delta_y;
-
-        res[i][j] = (p[i+1][j] - 2.0 * p[i][j] + p[i-1][j]) / dx2 +
-                    (p[i][j+1] - 2.0 * p[i][j] + p[i][j-1]) / dy2 -
-                    RHS[i][j];
     }
 }
 
@@ -697,35 +640,6 @@ __global__ void calculate_norm_kernel(double **matrix, int i_max, int j_max, dou
     }
 }
 
-double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
-    const int BLOCK_SIZE = 16;
-    
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
-    
-    int total_blocks = gridDim.x * gridDim.y;
-    
-    double *d_block_norms, *d_final_norm;
-    CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
-    CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
-    
-    // Calculate partial norms
-    calculate_norm_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_norms);
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-    
-    // Reduce to final norm
-    reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-    
-    double norm;
-    CHECK_CUDA_ERROR(cudaMemcpy(&norm, d_final_norm, sizeof(double), cudaMemcpyDeviceToHost));
-    
-    cudaFree(d_block_norms);
-    cudaFree(d_final_norm);
-    
-    return norm;
-}
 
 
 double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
@@ -1139,7 +1053,7 @@ int main(int argc, char* argv[])
     int n_out = 0;
 
     clock_t start = clock();
-
+    double time_sor = 0.0;
     while (t < T) {
         // Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat_cuda(i_max, j_max, u);
@@ -1180,7 +1094,11 @@ int main(int argc, char* argv[])
         // Execute SOR step using UVA
         // Passar num_actual_border_points para SOR_UVA
         //SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        clock_t start_sor = clock();
         SOR_UVA_with_shared_memory(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        clock_t end_sor = clock();
+        time_sor += (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
+
         CHECK_CUDA_ERROR(cudaGetLastError());
         //clock_t end_sor = clock();
         //double sor_time = (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
@@ -1214,7 +1132,7 @@ int main(int argc, char* argv[])
 
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
-    fprintf(stderr, "%.6f", time_spent);
+    fprintf(stderr, "%.6f", time_sor);
 
     // Free unified memory
     free_device_memory(u, v, p, res, RHS, F, G, borders);

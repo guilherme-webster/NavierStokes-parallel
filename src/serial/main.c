@@ -82,7 +82,7 @@ int main(int argc, char* argv[])
     int n_out = 0;
 
     clock_t start = clock();
-
+    double time_sor = 0.0;
     while (t < T) {
 
     	// Adaptive stepsize and weight factor for Donor-Cell
@@ -119,7 +119,10 @@ int main(int argc, char* argv[])
             }
         }
         //clock_t start_UVA = clock();
-        if (SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it) == -1) printf("Maximum SOR iterations exceeded!\n");
+        clock_t start_sor = clock();
+        SOR(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
+        clock_t end_sor = clock();
+        time_sor += (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
         //clock_t end_UVA = clock();
         //double time_UVA = (double)(end_UVA - start_UVA) / CLOCKS_PER_SEC;
         //fprintf(stderr, "SOR UVA time: %.6f\n", time_UVA);
@@ -147,7 +150,7 @@ int main(int argc, char* argv[])
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
 
-    fprintf(stderr, "%.6f", time_spent);
+    fprintf(stderr, "%.6f", time_sor);
 
     // Free grid memory.
     free_memory(&u, &v, &p, &res, &RHS, &F, &G);
