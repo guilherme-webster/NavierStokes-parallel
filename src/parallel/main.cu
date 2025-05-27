@@ -173,7 +173,7 @@ int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y,
         h_norm = sqrt(h_norm / (i_max * j_max));
         
         // Check convergence
-        if (h_norm <= eps * (norm_p + 0.01)) {
+        if (h_norm <= eps * (norm_p + 2.0)) {
             // Copy final results back to host
             for (int j = 0; j < height; j++) {
                 cudaMemcpy(p[j], d_p + j * pitch, width * sizeof(double), cudaMemcpyDeviceToHost);
@@ -266,7 +266,6 @@ int main(int argc, char* argv[])
     
     // Initialize all parameters.
 	init(&problem, &f, &i_max, &j_max, &a, &b, &Re, &T, &g_x, &g_y, &tau, &omega, &epsilon, &max_it, &n_print, param_file);
-    printf("Initialized!\n");
 
     // Set step size in space.
     delta_x = a / i_max;
@@ -274,7 +273,6 @@ int main(int argc, char* argv[])
 
     // Allocate memory for grids.
     allocate_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max);
-    printf("Memory allocated.\n");
 
     // Time loop.
     double t = 0;
@@ -285,7 +283,6 @@ int main(int argc, char* argv[])
     clock_t start = clock();
 
     while (t < T) {
-        printf("%.5f / %.5f\n---------------------\n", t, T);
 
     	// Adaptive stepsize and weight factor for Donor-Cell
         double u_max = max_mat(i_max, j_max, u);
@@ -309,12 +306,10 @@ int main(int argc, char* argv[])
             exit(EXIT_FAILURE);
         }
 
-        printf("Conditions set!\n");
 
         // Calculate F and G.
         FG(F, G, u, v, i_max, j_max, Re, g_x, g_y, delta_t, delta_x, delta_y, gamma);
 
-        printf("F, G calculated!\n");
 
         // RHS of Poisson equation.
         for (i = 1; i <= i_max; i++ ) {
@@ -322,7 +317,6 @@ int main(int argc, char* argv[])
                 RHS[i][j] = 1.0 / delta_t * ((F[i][j] - F[i-1][j])/delta_x + (G[i][j] - G[i][j-1])/delta_y);
             }
         }
-        printf("RHS calculated!\n");
 
         // Execute SOR step.
         int sor_result = SOR_CUDA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it);
@@ -334,7 +328,6 @@ int main(int argc, char* argv[])
                 if (j <= j_max - 1) v[i][j] = G[i][j] - delta_t * dp_dy(p, i, j, delta_y);
             }
         }
-        printf("Velocities updatet!\n");
 
         // Print to file every ..th step.
         // if (n % n_print == 0) {
@@ -352,8 +345,6 @@ int main(int argc, char* argv[])
             // For example, print central values and some boundary values
             printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
             printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
-            printf("P-CENTER: %.6f\n", p[i_max/2][j_max/2]);
-
             // Add more key values as needed
             n_out++;
         }

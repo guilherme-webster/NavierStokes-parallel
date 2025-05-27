@@ -147,6 +147,9 @@ int FG(double** F, double** G, double** u, double** v, int i_max, int j_max, dou
  */
 double dp_dx(double** p, int i, int j, double delta_x);
 
+double L2(double** m, int i_max, int j_max);
+
+
 /**
  * @brief Stencil for \f$\frac{dp}{dy}\f$.
  * 
