@@ -652,6 +652,113 @@ __global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, d
         *final_norm = sqrt(shared_data[0] / (i_max * j_max)); // Agora i_max e j_max são parâmetros
     }
 }
+
+
+__global__ void calculate_norm_kernel(double **matrix, int i_max, int j_max, double *block_norms) {
+    const int BLOCK_SIZE = 16;
+    
+    __shared__ double norm_shared[BLOCK_SIZE][BLOCK_SIZE+1];
+    
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
+    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    
+    double val = 0.0;
+    if (i <= i_max && j <= j_max) {
+        val = matrix[i][j];
+        norm_shared[tx][ty] = val * val;
+    } else {
+        norm_shared[tx][ty] = 0.0;
+    }
+    
+    __syncthreads();
+    
+    // Reduction in x
+    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+        if (tx < stride) {
+            norm_shared[tx][ty] += norm_shared[tx + stride][ty];
+        }
+        __syncthreads();
+    }
+    
+    // Reduction in y
+    if (tx == 0) {
+        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
+            if (ty < stride) {
+                norm_shared[0][ty] += norm_shared[0][ty + stride];
+            }
+            __syncthreads();
+        }
+        
+        if (ty == 0) {
+            block_norms[blockIdx.y * gridDim.x + blockIdx.x] = norm_shared[0][0];
+        }
+    }
+}
+
+double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
+    const int BLOCK_SIZE = 16;
+    
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    
+    int total_blocks = gridDim.x * gridDim.y;
+    
+    double *d_block_norms, *d_final_norm;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
+    
+    // Calculate partial norms
+    calculate_norm_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_norms);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    // Reduce to final norm
+    reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    double norm;
+    CHECK_CUDA_ERROR(cudaMemcpy(&norm, d_final_norm, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    cudaFree(d_block_norms);
+    cudaFree(d_final_norm);
+    
+    return norm;
+}
+
+
+double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
+    const int BLOCK_SIZE = 16;
+    
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    
+    int total_blocks = gridDim.x * gridDim.y;
+    
+    double *d_block_norms, *d_final_norm;
+    CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
+    CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
+    
+    // Calculate partial norms
+    calculate_norm_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_norms);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    // Reduce to final norm
+    reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    
+    double norm;
+    CHECK_CUDA_ERROR(cudaMemcpy(&norm, d_final_norm, sizeof(double), cudaMemcpyDeviceToHost));
+    
+    cudaFree(d_block_norms);
+    cudaFree(d_final_norm);
+    
+    return norm;
+}
+
+
 int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x, double delta_y,
                                double **res, double **RHS, double omega, double epsilon, int max_it,
                                BoundaryPoint *borders, int border_count) {
@@ -672,7 +779,7 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
     CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
     CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
     
-    double norm_p_initial = calculate_L2_norm_host_uva(p, i_max, j_max);
+    double norm_p_initial = calculate_L2_norm_device(p, i_max, j_max);
     double current_L2_res_norm;
     
     for (int it = 0; it < max_it; it++) {
@@ -1019,8 +1126,7 @@ int main(int argc, char* argv[])
     int num_actual_border_points = 2 * (i_max + j_max + 2);
 
     // Passar num_actual_border_points para allocate_unified_memory
-    allocate_device_memory(&u, &v, &p, &res, &RHS, &F, &G, &borders, i_max, j_max, num_actual_border_points);    
-    // precalculate_borders preenche o array 'borders'.
+    allocate_device_memory(&u, &v, &p, &res, &RHS, &F, &G, i_max, j_max, &borders, num_actual_border_points);    // precalculate_borders preenche o array 'borders'.
     // Ele não precisa mais do count como parâmetro se a memória já está dimensionada corretamente.
     precalculate_borders(i_max, j_max, borders);
     
@@ -1088,8 +1194,24 @@ int main(int argc, char* argv[])
         t += delta_t;
         n++;
     }
-        printf("U-CENTER: %.6f\n", u[i_max/2][j_max/2]);
-        printf("V-CENTER: %.6f\n", v[i_max/2][j_max/2]);
+
+    // Get center values from device memory
+    double u_center, v_center;
+    double *u_row_ptr, *v_row_ptr;
+    int center_i = i_max/2;
+    int center_j = j_max/2;
+
+    // First get the row pointers
+    CHECK_CUDA_ERROR(cudaMemcpy(&u_row_ptr, u + center_i, sizeof(double*), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&v_row_ptr, v + center_i, sizeof(double*), cudaMemcpyDeviceToHost));
+
+    // Then get the actual values
+    CHECK_CUDA_ERROR(cudaMemcpy(&u_center, u_row_ptr + center_j, sizeof(double), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(&v_center, v_row_ptr + center_j, sizeof(double), cudaMemcpyDeviceToHost));
+
+    printf("U-CENTER: %.6f\n", u_center);
+    printf("V-CENTER: %.6f\n", v_center);
+
     clock_t end = clock();
     double time_spent = (double)(end - start) / CLOCKS_PER_SEC;
     fprintf(stderr, "%.6f", time_spent);
