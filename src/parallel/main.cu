@@ -43,12 +43,29 @@ __global__ void update_ghost_cells_kernel(double* d_p, int i_max, int j_max, int
 /**
  * CUDA kernel for SOR iteration
  */
-__global__ void sor_iteration_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
-                                    double omega, double dxdx, double dydy, int pitch) {
+__global__ void sor_red_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
+                              double omega, double dxdx, double dydy, int pitch) {
     int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
     int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
     
-    if (i <= i_max && j <= j_max) {
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 0) {
+        d_p[j * pitch + i] = (1.0 - omega) * d_p[j * pitch + i] + 
+                             omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) * 
+                             ((d_p[j * pitch + (i+1)] + d_p[j * pitch + (i-1)]) / dxdx + 
+                              (d_p[(j+1) * pitch + i] + d_p[(j-1) * pitch + i]) / dydy - 
+                              d_RHS[j * pitch + i]);
+    }
+}
+
+/**
+ * CUDA kernel for SOR iteration - Black cells (i+j is odd)
+ */
+__global__ void sor_black_kernel(double* d_p, double* d_RHS, int i_max, int j_max, 
+                                double omega, double dxdx, double dydy, int pitch) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x + 1;
+    int j = blockIdx.y * blockDim.y + threadIdx.y + 1;
+    
+    if (i <= i_max && j <= j_max && (i + j) % 2 == 1) {
         d_p[j * pitch + i] = (1.0 - omega) * d_p[j * pitch + i] + 
                              omega / (2.0 * (1.0 / dxdx + 1.0 / dydy)) * 
                              ((d_p[j * pitch + (i+1)] + d_p[j * pitch + (i-1)]) / dxdx + 
@@ -158,8 +175,12 @@ int SOR_CUDA(double** p, int i_max, int j_max, double delta_x, double delta_y,
         update_ghost_cells_kernel<<<ghostGridSize, ghostBlockSize>>>(d_p, i_max, j_max, pitch);
         
         // Perform SOR iteration
-        sor_iteration_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
+        sor_red_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
+        cudaDeviceSynchronize(); // Synchronize before black update
         
+        sor_black_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, i_max, j_max, omega, dxdx, dydy, pitch);
+        cudaDeviceSynchronize(); // Synchronize after black update
+    
         // Calculate residuals
         calculate_residuals_kernel<<<gridSize, blockSize>>>(d_p, d_RHS, d_res, i_max, j_max, dxdx, dydy, pitch);
         
