@@ -769,6 +769,119 @@ double max_mat_cuda(int i_max, int j_max, double **matrix) {
     return max_value;
 }
 
+
+// Adicione após a definição de BoundaryPoint no início do arquivo
+
+// Kernel para aplicar condições de contorno de não-deslizamento (no-slip)
+__global__ void set_noslip_kernel(double **u, double **v, BoundaryPoint *borders, 
+                                  int border_count, int side) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < border_count) {
+        // Verifica se este ponto de borda corresponde ao lado desejado
+        if (borders[idx].position == side) {
+            int i = borders[idx].i;
+            int j = borders[idx].j;
+            
+            // Aplica condições de não-deslizamento conforme o lado
+            switch (side) {
+                case TOP:
+                    if (j == borders[idx].j) { // Confirma que estamos na borda superior
+                        v[i][j] = 0.0; // Velocidade v fixa na borda
+                        u[i][j] = -u[i][j-1]; // Reflexão da velocidade u
+                    }
+                    break;
+                    
+                case BOTTOM:
+                    if (j == borders[idx].j) { // Confirma que estamos na borda inferior
+                        v[i][j] = 0.0; // Velocidade v fixa na borda
+                        u[i][j] = -u[i][j+1]; // Reflexão da velocidade u
+                    }
+                    break;
+                    
+                case LEFT:
+                    if (i == borders[idx].i) { // Confirma que estamos na borda esquerda
+                        u[i][j] = 0.0; // Velocidade u fixa na borda
+                        v[i][j] = -v[i+1][j]; // Reflexão da velocidade v
+                    }
+                    break;
+                    
+                case RIGHT:
+                    if (i == borders[idx].i) { // Confirma que estamos na borda direita
+                        u[i][j] = 0.0; // Velocidade u fixa na borda
+                        v[i][j] = -v[i-1][j]; // Reflexão da velocidade v
+                    }
+                    break;
+            }
+        }
+    }
+}
+
+// Kernel para aplicar condições de contorno de entrada (inflow)
+__global__ void set_inflow_kernel(double **u, double **v, BoundaryPoint *borders, 
+                                 int border_count, int side, double u_fix, double v_fix) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (idx < border_count) {
+        // Verifica se este ponto de borda corresponde ao lado desejado
+        if (borders[idx].position == side) {
+            int i = borders[idx].i;
+            int j = borders[idx].j;
+            
+            // Aplica condições de entrada conforme o lado
+            switch (side) {
+                case TOP:
+                    if (j == borders[idx].j) { // Confirma que estamos na borda superior
+                        v[i][j] = v_fix; // Velocidade v fixa na borda
+                        u[i][j] = 2 * u_fix - u[i][j-1]; // Valor extrapolado para u
+                    }
+                    break;
+                    
+                case BOTTOM:
+                    if (j == borders[idx].j) { // Confirma que estamos na borda inferior
+                        v[i][j] = v_fix; // Velocidade v fixa na borda
+                        u[i][j] = 2 * u_fix - u[i][j+1]; // Valor extrapolado para u
+                    }
+                    break;
+                    
+                case LEFT:
+                    if (i == borders[idx].i) { // Confirma que estamos na borda esquerda
+                        u[i][j] = u_fix; // Velocidade u fixa na borda
+                        v[i][j] = 2 * v_fix - v[i+1][j]; // Valor extrapolado para v
+                    }
+                    break;
+                    
+                case RIGHT:
+                    if (i == borders[idx].i) { // Confirma que estamos na borda direita
+                        u[i][j] = u_fix; // Velocidade u fixa na borda
+                        v[i][j] = 2 * v_fix - v[i-1][j]; // Valor extrapolado para v
+                    }
+                    break;
+            }
+        }
+    }
+}
+
+// Funções host para invocar os kernels
+void set_noslip_cuda(int i_max, int j_max, double **u, double **v, int side, 
+                     BoundaryPoint *borders, int border_count) {
+    dim3 blockDim(256);
+    dim3 gridDim((border_count + blockDim.x - 1) / blockDim.x);
+    
+    set_noslip_kernel<<<gridDim, blockDim>>>(u, v, borders, border_count, side);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+void set_inflow_cuda(int i_max, int j_max, double **u, double **v, int side, 
+                     double u_fix, double v_fix, BoundaryPoint *borders, int border_count) {
+    dim3 blockDim(256);
+    dim3 gridDim((border_count + blockDim.x - 1) / blockDim.x);
+    
+    set_inflow_kernel<<<gridDim, blockDim>>>(u, v, borders, border_count, side, u_fix, v_fix);
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+
 /**
  * @brief Main function.
  * 
@@ -865,16 +978,16 @@ int main(int argc, char* argv[])
 
         // Set boundary conditions (permanecem na CPU)
         if (problem == 1) {
-            set_noslip(i_max, j_max, u, v, LEFT);
-            set_noslip(i_max, j_max, u, v, RIGHT);
-            set_noslip(i_max, j_max, u, v, BOTTOM);
-            set_inflow(i_max, j_max, u, v, TOP, 1.0, 0.0);
-        } else if (problem == 2) {
-            set_noslip(i_max, j_max, u, v, LEFT);
-            set_noslip(i_max, j_max, u, v, RIGHT);
-            set_noslip(i_max, j_max, u, v, BOTTOM);
-            set_inflow(i_max, j_max, u, v, TOP, sin(f*t), 0.0);           
-        }
+        set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
+        set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
+        set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
+        set_inflow_cuda(i_max, j_max, u, v, TOP, 1.0, 0.0, borders, num_actual_border_points);
+    } else if (problem == 2) {
+        set_noslip_cuda(i_max, j_max, u, v, LEFT, borders, num_actual_border_points);
+        set_noslip_cuda(i_max, j_max, u, v, RIGHT, borders, num_actual_border_points);
+        set_noslip_cuda(i_max, j_max, u, v, BOTTOM, borders, num_actual_border_points);
+        set_inflow_cuda(i_max, j_max, u, v, TOP, sin(f*t), 0.0, borders, num_actual_border_points);           
+    }
 
         dim3 blockDim(16, 16);
         dim3 gridDim((i_max + blockDim.x - 1) / blockDim.x,
