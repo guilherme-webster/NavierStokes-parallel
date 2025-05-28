@@ -705,10 +705,6 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
         sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 0);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
-        // Atualizar bordas novamente
-        update_boundaries_with_precalc_kernel<<<boundaryGridDim, boundaryBlockDim>>>(p, borders, border_count);
-        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-        
         // Pontos pretos com memória compartilhada
         sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 1);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
