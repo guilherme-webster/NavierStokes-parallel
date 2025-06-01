@@ -47,6 +47,19 @@ endif()
 target_link_libraries(serial m OpenMP::OpenMP_C)
 target_link_libraries(parallel m OpenMP::OpenMP_C)
 target_link_libraries(openmp m OpenMP::OpenMP_C)
+
+# Configurar flags específicas para OpenMP com offloading para GPU
+if(COMPILER_SUPPORTS_OPENMP_GPU)
+    target_compile_options(openmp PRIVATE 
+        $<$<COMPILE_LANGUAGE:C>:-fopenmp -fopenmp-targets=nvptx64-nvidia-cuda>
+        $<$<COMPILE_LANGUAGE:CXX>:-fopenmp -fopenmp-targets=nvptx64-nvidia-cuda>)
+    target_link_options(openmp PRIVATE -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda)
+    message(STATUS "Configurando OpenMP com suporte a offloading para GPU")
+else()
+    message(WARNING "O compilador não suporta OpenMP offloading para GPU. O código OpenMP será executado apenas na CPU.")
+endif()
+
+
 set_property(
     TARGET   parallel
     PROPERTY CUDA_ARCHITECTURES OFF)
