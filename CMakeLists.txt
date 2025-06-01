@@ -25,10 +25,18 @@ set(CUDA_SOURCES
     src/parallel/integration.cu
     src/parallel/memory.cu
 )
+set(Openmp_SOURCES
+    src/openmp/main.c
+    src/openmp/io.c
+    src/openmp/boundaries.c
+    src/openmp/integration.c
+    src/openmp/memory.c
+)
 
 # Define o executável
 add_executable(serial   ${SOURCES})
 add_executable(parallel ${CUDA_SOURCES})
+add_executable(openmp    ${Openmp_SOURCES})
 
 # Use a arquitetura apenas se for especificada pelo usuário
 if(DEFINED ARCH)
@@ -38,7 +46,7 @@ endif()
 # Vincula as bibliotecas necessárias
 target_link_libraries(serial m OpenMP::OpenMP_C)
 target_link_libraries(parallel m OpenMP::OpenMP_C)
-
+target_link_libraries(openmp m OpenMP::OpenMP_C)
 set_property(
     TARGET   parallel
     PROPERTY CUDA_ARCHITECTURES OFF)
