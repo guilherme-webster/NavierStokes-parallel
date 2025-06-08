@@ -15,15 +15,15 @@
 #include "io.h"
 #include "integration.h"
 #include "boundaries.h"
-
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <cuda_runtime.h>
 #include <vector>
 #include <numeric>
 #include <cmath>
-
+int BLOCK_SIZE = -1; // Default value, can be overridden by command line
 
 typedef struct{
     int i;
@@ -383,29 +383,34 @@ __global__ void calculate_G_kernel(double **G, double **u, double **v, int i_max
 
 __global__ void sor_shared_memory_kernel(double **p, double **RHS, 
                                         int i_max, int j_max, double delta_x, double delta_y, 
-                                        double omega, int color) {
-    const int BLOCK_SIZE = 16; // Assuming BLOCK_SIZE is 16 as used elsewhere
-    const int SHARED_MEM_DIM_SIZE = BLOCK_SIZE + 2; // e.g., 18 for BLOCK_SIZE 16
+                                        double omega, int color, int block_size) {
+    // Use dynamic shared memory instead of static arrays
+    extern __shared__ double shared_mem[];
     
-    // p_shared needs to hold a (BLOCK_SIZE+2) x (BLOCK_SIZE+2) tile
-    // RHS_shared only needs the BLOCK_SIZE x BLOCK_SIZE interior part
-    __shared__ double p_shared[SHARED_MEM_DIM_SIZE][SHARED_MEM_DIM_SIZE + 1]; // +1 for padding against bank conflicts
-    __shared__ double RHS_shared[BLOCK_SIZE][BLOCK_SIZE]; // Only interior RHS values are needed by the stencil
+    const int SHARED_MEM_DIM_SIZE = block_size + 2;
+    
+    // Layout: p_shared first, then RHS_shared
+    double *p_shared_data = shared_mem;
+    double *RHS_shared_data = shared_mem + SHARED_MEM_DIM_SIZE * (SHARED_MEM_DIM_SIZE + 1);
+    
+    // Helper macros to access 2D arrays in 1D memory
+    #define P_SHARED(i,j) p_shared_data[(i) * (SHARED_MEM_DIM_SIZE + 1) + (j)]
+    #define RHS_SHARED(i,j) RHS_shared_data[(i) * block_size + (j)]
 
-    int tx = threadIdx.x; // 0 to BLOCK_SIZE-1
-    int ty = threadIdx.y; // 0 to BLOCK_SIZE-1
+    int tx = threadIdx.x; // 0 to block_size-1
+    int ty = threadIdx.y; // 0 to block_size-1
 
     // Global indices for the current thread's primary responsibility (center of its 3x3 stencil in shared mem)
-    int current_i = blockIdx.x * BLOCK_SIZE + tx + 1; // 1 to i_max
-    int current_j = blockIdx.y * BLOCK_SIZE + ty + 1; // 1 to j_max
+    int current_i = blockIdx.x * block_size + tx + 1; // 1 to i_max
+    int current_j = blockIdx.y * block_size + ty + 1; // 1 to j_max
 
     // --- Stage 1: Load data into shared memory ---
 
     // Each thread loads its corresponding p[current_i][current_j] into the center of its shared memory view
     // p_shared[tx+1][ty+1] corresponds to p[current_i][current_j]
     if (current_i >= 1 && current_i <= i_max && current_j >= 1 && current_j <= j_max) {
-        p_shared[tx + 1][ty + 1] = p[current_i][current_j];
-        RHS_shared[tx][ty] = RHS[current_i][current_j]; // RHS_shared is indexed 0..BLOCK_SIZE-1
+        P_SHARED(tx + 1, ty + 1) = p[current_i][current_j];
+        RHS_SHARED(tx, ty) = RHS[current_i][current_j]; // RHS_shared is indexed 0..block_size-1
     }
 
     // Load halo regions into p_shared
@@ -413,68 +418,68 @@ __global__ void sor_shared_memory_kernel(double **p, double **RHS,
 
     // Left halo: p_shared[0][ty+1]
     if (tx == 0) {
-        int gi = blockIdx.x * BLOCK_SIZE; // Global i for the halo element p[gi][gj]
-        int gj = blockIdx.y * BLOCK_SIZE + ty + 1;
+        int gi = blockIdx.x * block_size; // Global i for the halo element p[gi][gj]
+        int gj = blockIdx.y * block_size + ty + 1;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 1 && gj <= j_max) { // Check gj bounds carefully
-            p_shared[0][ty + 1] = p[gi][gj];
+            P_SHARED(0, ty + 1) = p[gi][gj];
         }
     }
-    // Right halo: p_shared[BLOCK_SIZE+1][ty+1]
-    if (tx == BLOCK_SIZE - 1) {
-        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
-        int gj = blockIdx.y * BLOCK_SIZE + ty + 1;
+    // Right halo: p_shared[block_size+1][ty+1]
+    if (tx == block_size - 1) {
+        int gi = blockIdx.x * block_size + block_size + 1;
+        int gj = blockIdx.y * block_size + ty + 1;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 1 && gj <= j_max) {
-            p_shared[BLOCK_SIZE + 1][ty + 1] = p[gi][gj];
+            P_SHARED(block_size + 1, ty + 1) = p[gi][gj];
         }
     }
     // Top halo: p_shared[tx+1][0]
     if (ty == 0) {
-        int gi = blockIdx.x * BLOCK_SIZE + tx + 1;
-        int gj = blockIdx.y * BLOCK_SIZE;
+        int gi = blockIdx.x * block_size + tx + 1;
+        int gj = blockIdx.y * block_size;
         if (gi >= 1 && gi <= i_max && gj >= 0 && gj <= j_max + 1) { // Check gi bounds carefully
-             p_shared[tx + 1][0] = p[gi][gj];
+             P_SHARED(tx + 1, 0) = p[gi][gj];
         }
     }
-    // Bottom halo: p_shared[tx+1][BLOCK_SIZE+1]
-    if (ty == BLOCK_SIZE - 1) {
-        int gi = blockIdx.x * BLOCK_SIZE + tx + 1;
-        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+    // Bottom halo: p_shared[tx+1][block_size+1]
+    if (ty == block_size - 1) {
+        int gi = blockIdx.x * block_size + tx + 1;
+        int gj = blockIdx.y * block_size + block_size + 1;
         if (gi >= 1 && gi <= i_max && gj >= 0 && gj <= j_max + 1) {
-            p_shared[tx + 1][BLOCK_SIZE + 1] = p[gi][gj];
+            P_SHARED(tx + 1, block_size + 1) = p[gi][gj];
         }
     }
 
     // Corner halos for p_shared
     // Top-Left: p_shared[0][0]
     if (tx == 0 && ty == 0) {
-        int gi = blockIdx.x * BLOCK_SIZE;
-        int gj = blockIdx.y * BLOCK_SIZE;
+        int gi = blockIdx.x * block_size;
+        int gj = blockIdx.y * block_size;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
-            p_shared[0][0] = p[gi][gj];
+            P_SHARED(0, 0) = p[gi][gj];
         }
     }
-    // Top-Right: p_shared[BLOCK_SIZE+1][0]
-    if (tx == BLOCK_SIZE - 1 && ty == 0) {
-        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
-        int gj = blockIdx.y * BLOCK_SIZE;
+    // Top-Right: p_shared[block_size+1][0]
+    if (tx == block_size - 1 && ty == 0) {
+        int gi = blockIdx.x * block_size + block_size + 1;
+        int gj = blockIdx.y * block_size;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
-            p_shared[BLOCK_SIZE + 1][0] = p[gi][gj];
+            P_SHARED(block_size + 1, 0) = p[gi][gj];
         }
     }
-    // Bottom-Left: p_shared[0][BLOCK_SIZE+1]
-    if (tx == 0 && ty == BLOCK_SIZE - 1) {
-        int gi = blockIdx.x * BLOCK_SIZE;
-        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+    // Bottom-Left: p_shared[0][block_size+1]
+    if (tx == 0 && ty == block_size - 1) {
+        int gi = blockIdx.x * block_size;
+        int gj = blockIdx.y * block_size + block_size + 1;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
-            p_shared[0][BLOCK_SIZE + 1] = p[gi][gj];
+            P_SHARED(0, block_size + 1) = p[gi][gj];
         }
     }
-    // Bottom-Right: p_shared[BLOCK_SIZE+1][BLOCK_SIZE+1]
-    if (tx == BLOCK_SIZE - 1 && ty == BLOCK_SIZE - 1) {
-        int gi = blockIdx.x * BLOCK_SIZE + BLOCK_SIZE + 1;
-        int gj = blockIdx.y * BLOCK_SIZE + BLOCK_SIZE + 1;
+    // Bottom-Right: p_shared[block_size+1][block_size+1]
+    if (tx == block_size - 1 && ty == block_size - 1) {
+        int gi = blockIdx.x * block_size + block_size + 1;
+        int gj = blockIdx.y * block_size + block_size + 1;
         if (gi >= 0 && gi <= i_max + 1 && gj >= 0 && gj <= j_max + 1) {
-            p_shared[BLOCK_SIZE + 1][BLOCK_SIZE + 1] = p[gi][gj];
+            P_SHARED(block_size + 1, block_size + 1) = p[gi][gj];
         }
     }
 
@@ -493,12 +498,12 @@ __global__ void sor_shared_memory_kernel(double **p, double **RHS,
         // Right:  p_shared[tx+2][ty+1]
         // Top:    p_shared[tx+1][ty  ]
         // Bottom: p_shared[tx+1][ty+2]
-        double p_old = p_shared[tx + 1][ty + 1];
+        double p_old = P_SHARED(tx + 1, ty + 1);
         double p_new = (1.0 - omega) * p_old + 
                         omega / coeff * 
-                        ((p_shared[tx + 2][ty + 1] + p_shared[tx][ty + 1]) / dx2 +
-                        (p_shared[tx + 1][ty + 2] + p_shared[tx + 1][ty]) / dy2 -
-                        RHS_shared[tx][ty]); // Use the loaded interior RHS_shared
+                        ((P_SHARED(tx + 2, ty + 1) + P_SHARED(tx, ty + 1)) / dx2 +
+                        (P_SHARED(tx + 1, ty + 2) + P_SHARED(tx + 1, ty)) / dy2 -
+                        RHS_SHARED(tx, ty)); // Use the loaded interior RHS_shared
 
             // we are writing to the global mem, may affect performance
             p[current_i][current_j] = p_new;
@@ -510,18 +515,17 @@ __global__ void sor_shared_memory_kernel(double **p, double **RHS,
 __global__ void calculate_residual_and_norm_kernel(double **p, double **RHS, 
                                                  int i_max, int j_max, 
                                                  double delta_x, double delta_y,
-                                                 double *block_norms) {
-    const int BLOCK_SIZE = 16;
+                                                 double *block_norms, int block_size) {
     
-    // Compartilhar valores do resíduo para blocos - usar para redução local
-    __shared__ double res_shared[BLOCK_SIZE][BLOCK_SIZE+1]; // +1 para evitar conflitos de bancos
+    // Shared memory for residual reduction
+    extern __shared__ double res_shared[];
     
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     
     // Índices globais
-    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
-    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    int i = blockIdx.x * block_size + tx + 1;
+    int j = blockIdx.y * block_size + ty + 1;
     
     double dx2 = delta_x * delta_x;
     double dy2 = delta_y * delta_y;
@@ -535,41 +539,30 @@ __global__ void calculate_residual_and_norm_kernel(double **p, double **RHS,
         
         // Armazenar o quadrado do resíduo para posterior redução
         res_squared = residual * residual;
-        res_shared[tx][ty] = res_squared;
+        res_shared[tx * block_size + ty] = res_squared;
     } else {
-        res_shared[tx][ty] = 0.0;
+        res_shared[tx * block_size + ty] = 0.0;
     }
     
     __syncthreads();
     
-    // Redução paralela dentro do bloco - somando todos os valores da norma ao quadrado
-    // Redução em x
-    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-        if (tx < stride) {
-            res_shared[tx][ty] += res_shared[tx + stride][ty];
+    // Redução paralela dentro do bloco
+    for (int stride = (block_size * block_size)/2; stride > 0; stride >>= 1) {
+        if (tx * block_size + ty < stride) {
+            res_shared[tx * block_size + ty] += res_shared[tx * block_size + ty + stride];
         }
         __syncthreads();
     }
     
-    // Redução em y - apenas threads com tx==0 participam
-    if (tx == 0) {
-        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-            if (ty < stride) {
-                res_shared[0][ty] += res_shared[0][ty + stride];
-            }
-            __syncthreads();
-        }
-        
-        // Thread (0,0) salva o resultado final do bloco
-        if (ty == 0) {
-            block_norms[blockIdx.y * gridDim.x + blockIdx.x] = res_shared[0][0];
-        }
+    // Thread (0,0) salva o resultado final do bloco
+    if (tx == 0 && ty == 0) {
+        block_norms[blockIdx.y * gridDim.x + blockIdx.x] = res_shared[0];
     }
 }
 
 // Kernel para redução final de normas de blocos para um único valor
-__global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, double *final_norm, int i_max, int j_max) {
-    __shared__ double shared_data[256];
+__global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, double *final_norm, int i_max, int j_max, int block_size) {
+    extern __shared__ double shared_data[]; // Use dynamic shared memory
     
     int tid = threadIdx.x;
     
@@ -597,57 +590,44 @@ __global__ void reduce_block_norms_kernel(double *block_norms, int num_blocks, d
 }
 
 
-__global__ void calculate_norm_kernel(double **matrix, int i_max, int j_max, double *block_norms) {
-    const int BLOCK_SIZE = 16;
-    
-    __shared__ double norm_shared[BLOCK_SIZE][BLOCK_SIZE+1];
+__global__ void calculate_norm_kernel(double **matrix, int i_max, int j_max, double *block_norms, int block_size) {
+    extern __shared__ double norm_shared[];
     
     int tx = threadIdx.x;
     int ty = threadIdx.y;
-    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
-    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    int i = blockIdx.x * block_size + tx + 1;
+    int j = blockIdx.y * block_size + ty + 1;
     
     double val = 0.0;
     if (i <= i_max && j <= j_max) {
         val = matrix[i][j];
-        norm_shared[tx][ty] = val * val;
+        norm_shared[tx * block_size + ty] = val * val;
     } else {
-        norm_shared[tx][ty] = 0.0;
+        norm_shared[tx * block_size + ty] = 0.0;
     }
     
     __syncthreads();
     
-    // Reduction in x
-    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-        if (tx < stride) {
-            norm_shared[tx][ty] += norm_shared[tx + stride][ty];
+    // Reduction in a single dimension
+    for (int stride = (block_size * block_size)/2; stride > 0; stride >>= 1) {
+        if (tx * block_size + ty < stride) {
+            norm_shared[tx * block_size + ty] += norm_shared[tx * block_size + ty + stride];
         }
         __syncthreads();
     }
     
-    // Reduction in y
-    if (tx == 0) {
-        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-            if (ty < stride) {
-                norm_shared[0][ty] += norm_shared[0][ty + stride];
-            }
-            __syncthreads();
-        }
-        
-        if (ty == 0) {
-            block_norms[blockIdx.y * gridDim.x + blockIdx.x] = norm_shared[0][0];
-        }
+    if (tx == 0 && ty == 0) {
+        block_norms[blockIdx.y * gridDim.x + blockIdx.x] = norm_shared[0];
     }
 }
 
 
 
-double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
-    const int BLOCK_SIZE = 16;
-    
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+double calculate_L2_norm_device(double **matrix, int i_max, int j_max, int block_size) {
+
+    dim3 blockDim(block_size, block_size);
+    dim3 gridDim((i_max + block_size - 1) / block_size,
+                 (j_max + block_size - 1) / block_size);
     
     int total_blocks = gridDim.x * gridDim.y;
     
@@ -656,11 +636,11 @@ double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
     
     // Calculate partial norms
-    calculate_norm_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_norms);
+    calculate_norm_kernel<<<gridDim, blockDim, block_size * block_size * sizeof(double)>>>(matrix, i_max, j_max, d_block_norms, block_size);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
     // Reduce to final norm
-    reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
+    reduce_block_norms_kernel<<<1, block_size * block_size, block_size * block_size * sizeof(double)>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max, block_size);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
     double norm;
@@ -675,15 +655,14 @@ double calculate_L2_norm_device(double **matrix, int i_max, int j_max) {
 
 int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x, double delta_y,
                                double **res, double **RHS, double omega, double epsilon, int max_it,
-                               BoundaryPoint *borders, int border_count) {
+                               BoundaryPoint *borders, int border_count, int block_size) {
     
-    const int BLOCK_SIZE = 16;
-    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 gridDim((i_max + BLOCK_SIZE - 1) / BLOCK_SIZE,
-                 (j_max + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    dim3 blockDim(block_size, block_size);
+    dim3 gridDim((i_max + block_size - 1) / block_size,
+                 (j_max + block_size - 1) / block_size);
     
-    dim3 boundaryBlockDim(256); 
-    dim3 boundaryGridDim((border_count + 255) / 256);
+    dim3 boundaryBlockDim(block_size * block_size); 
+    dim3 boundaryGridDim((border_count + boundaryBlockDim.x - 1) / boundaryBlockDim.x);
     
     // Número total de blocos para o cálculo da norma
     int total_blocks = gridDim.x * gridDim.y;
@@ -693,8 +672,14 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
     CHECK_CUDA_ERROR(cudaMalloc(&d_block_norms, total_blocks * sizeof(double)));
     CHECK_CUDA_ERROR(cudaMalloc(&d_final_norm, sizeof(double)));
     
-    double norm_p_initial = calculate_L2_norm_device(p, i_max, j_max);
+    double norm_p_initial = calculate_L2_norm_device(p, i_max, j_max, block_size);
     double current_L2_res_norm;
+    
+    // Calculate shared memory sizes
+    size_t sor_shared_mem_size = (block_size + 2) * (block_size + 3) * sizeof(double) + // P_SHARED
+                                block_size * block_size * sizeof(double); // RHS_SHARED
+    size_t calc_res_shared_mem_size = block_size * block_size * sizeof(double);
+    size_t reduce_shared_mem_size = block_size * block_size * sizeof(double);
     
     for (int it = 0; it < max_it; it++) {
         // Atualizar bordas
@@ -702,7 +687,7 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Pontos vermelhos com memória compartilhada
-        sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 0);
+        sor_shared_memory_kernel<<<gridDim, blockDim, sor_shared_mem_size>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 0, block_size);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Atualizar bordas novamente
@@ -710,15 +695,15 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Pontos pretos com memória compartilhada
-        sor_shared_memory_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 1);
+        sor_shared_memory_kernel<<<gridDim, blockDim, sor_shared_mem_size>>>(p, RHS, i_max, j_max, delta_x, delta_y, omega, 1, block_size);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Verificação de convergência usando o novo método otimizado
-        calculate_residual_and_norm_kernel<<<gridDim, blockDim>>>(p, RHS, i_max, j_max, delta_x, delta_y, d_block_norms);
+        calculate_residual_and_norm_kernel<<<gridDim, blockDim, calc_res_shared_mem_size>>>(p, RHS, i_max, j_max, delta_x, delta_y, d_block_norms, block_size);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Redução final das normas de blocos em um único valor
-        reduce_block_norms_kernel<<<1, 256>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max);
+        reduce_block_norms_kernel<<<1, block_size * block_size, reduce_shared_mem_size>>>(d_block_norms, total_blocks, d_final_norm, i_max, j_max, block_size);
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         
         // Transferir apenas o valor final da norma para o host
@@ -741,18 +726,17 @@ int SOR_UVA_with_shared_memory(double **p, int i_max, int j_max, double delta_x,
 }
 
 
-__global__ void find_max_kernel(double **matrix, int i_max, int j_max, double *block_max) {
-    const int BLOCK_SIZE = 16;
+__global__ void find_max_kernel(double **matrix, int i_max, int j_max, double *block_max, int block_size) {
     
     // Compartilhar valores máximos para blocos - usar para redução local
-    __shared__ double max_shared[BLOCK_SIZE][BLOCK_SIZE+1]; // +1 para evitar conflitos de bancos
+    extern __shared__ double max_shared[]; // Use dynamic shared memory
     
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     
     // Índices globais
-    int i = blockIdx.x * BLOCK_SIZE + tx + 1;
-    int j = blockIdx.y * BLOCK_SIZE + ty + 1;
+    int i = blockIdx.x * block_size + tx + 1;
+    int j = blockIdx.y * block_size + ty + 1;
     
     // Inicializar com valor mínimo
     double local_max = -1e30; // Valor negativo grande
@@ -763,38 +747,27 @@ __global__ void find_max_kernel(double **matrix, int i_max, int j_max, double *b
     }
     
     // Armazenar valor local em memória compartilhada
-    max_shared[tx][ty] = local_max;
+    max_shared[tx * block_size + ty] = local_max;
     
     __syncthreads();
     
     // Redução paralela dentro do bloco - encontrando o máximo
-    // Redução em x
-    for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-        if (tx < stride) {
-            max_shared[tx][ty] = fmax(max_shared[tx][ty], max_shared[tx + stride][ty]);
+    for (int stride = (block_size * block_size)/2; stride > 0; stride >>= 1) {
+        if (tx * block_size + ty < stride) {
+            max_shared[tx * block_size + ty] = fmax(max_shared[tx * block_size + ty], max_shared[tx * block_size + ty + stride]);
         }
         __syncthreads();
     }
     
-    // Redução em y - apenas threads com tx==0 participam
-    if (tx == 0) {
-        for (int stride = BLOCK_SIZE/2; stride > 0; stride >>= 1) {
-            if (ty < stride) {
-                max_shared[0][ty] = fmax(max_shared[0][ty], max_shared[0][ty + stride]);
-            }
-            __syncthreads();
-        }
-        
-        // Thread (0,0) salva o resultado final do bloco
-        if (ty == 0) {
-            block_max[blockIdx.y * gridDim.x + blockIdx.x] = max_shared[0][0];
-        }
+    // Thread (0,0) salva o resultado final do bloco
+    if (tx == 0 && ty == 0) {
+        block_max[blockIdx.y * gridDim.x + blockIdx.x] = max_shared[0];
     }
 }
 
 // Kernel para redução final dos máximos de blocos para um único valor
-__global__ void reduce_block_max_kernel(double *block_max, int num_blocks, double *final_max) {
-    __shared__ double shared_data[256];
+__global__ void reduce_block_max_kernel(double *block_max, int num_blocks, double *final_max, int block_size) {
+    extern __shared__ double shared_data[];
     
     int tid = threadIdx.x;
     
@@ -824,7 +797,7 @@ __global__ void reduce_block_max_kernel(double *block_max, int num_blocks, doubl
 
 // Função host para encontrar o máximo de uma matriz usando CUDA
 double max_mat_cuda(int i_max, int j_max, double **matrix) {
-    const int BLOCK_SIZE = 16;
+    const int BLOCK_SIZE = 16; // Default block size for this function
     
     // Configurar dimensões da grade e blocos
     dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
@@ -840,11 +813,11 @@ double max_mat_cuda(int i_max, int j_max, double **matrix) {
     CHECK_CUDA_ERROR(cudaMalloc(&d_final_max, sizeof(double)));
     
     // Encontrar máximos locais em cada bloco
-    find_max_kernel<<<gridDim, blockDim>>>(matrix, i_max, j_max, d_block_max);
+    find_max_kernel<<<gridDim, blockDim, BLOCK_SIZE * BLOCK_SIZE * sizeof(double)>>>(matrix, i_max, j_max, d_block_max, BLOCK_SIZE);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
     // Reduzir máximos locais para um máximo global
-    reduce_block_max_kernel<<<1, 256>>>(d_block_max, total_blocks, d_final_max);
+    reduce_block_max_kernel<<<1, BLOCK_SIZE * BLOCK_SIZE, BLOCK_SIZE * BLOCK_SIZE * sizeof(double)>>>(d_block_max, total_blocks, d_final_max, BLOCK_SIZE);
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
     // Transferir o máximo final para o host
@@ -954,7 +927,7 @@ __global__ void set_inflow_kernel(double **u, double **v, BoundaryPoint *borders
 // Funções host para invocar os kernels
 void set_noslip_cuda(int i_max, int j_max, double **u, double **v, int side, 
                      BoundaryPoint *borders, int border_count) {
-    dim3 blockDim(256);
+    dim3 blockDim(BLOCK_SIZE * BLOCK_SIZE);
     dim3 gridDim((border_count + blockDim.x - 1) / blockDim.x);
     
     set_noslip_kernel<<<gridDim, blockDim>>>(u, v, borders, border_count, side);
@@ -963,7 +936,7 @@ void set_noslip_cuda(int i_max, int j_max, double **u, double **v, int side,
 
 void set_inflow_cuda(int i_max, int j_max, double **u, double **v, int side, 
                      double u_fix, double v_fix, BoundaryPoint *borders, int border_count) {
-    dim3 blockDim(256);
+    dim3 blockDim(BLOCK_SIZE * BLOCK_SIZE);
     dim3 gridDim((border_count + blockDim.x - 1) / blockDim.x);
     
     set_inflow_kernel<<<gridDim, blockDim>>>(u, v, borders, border_count, side, u_fix, v_fix);
@@ -1009,6 +982,22 @@ int main(int argc, char* argv[])
     const char* param_file = "parameters.txt"; // file containing parameters
 
     // fprintf(stderr, "CUDA: Working directory test\n");
+    
+    // Check if block size is provided as second argument
+    if (argc > 2) {
+        int new_block_size = atoi(argv[2]);
+        if (new_block_size > 0 && new_block_size <= 32) { // Reasonable range check
+            BLOCK_SIZE = new_block_size;
+        } else {
+            fprintf(stderr, "Warning: Invalid block size %d. Using default %d\n", new_block_size, BLOCK_SIZE);
+        }
+    }
+    if(BLOCK_SIZE == -1){
+        fprintf(stderr, "Error: Block size not specified. Please provide a valid block size as the second argument.\n");
+        return 1;
+    } else {
+        fprintf(stderr, "CUDA: Using block size %d\n", BLOCK_SIZE);
+    }
     
     // Test if we can open the file directly
     if (argc > 1) {
@@ -1095,7 +1084,7 @@ int main(int argc, char* argv[])
         // Passar num_actual_border_points para SOR_UVA
         //SOR_UVA(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
         clock_t start_sor = clock();
-        SOR_UVA_with_shared_memory(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points);
+        SOR_UVA_with_shared_memory(p, i_max, j_max, delta_x, delta_y, res, RHS, omega, epsilon, max_it, borders, num_actual_border_points, BLOCK_SIZE);
         clock_t end_sor = clock();
         time_sor += (double)(end_sor - start_sor) / CLOCKS_PER_SEC;
 
